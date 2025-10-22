@@ -6,3 +6,7 @@ numpy>=1.24.0
 plotly>=5.18.0
 python-dateutil>=2.8.2
 pydantic>=2.6.0
+
+reportlab>=4.2.0
+
+sendgrid>=6.11.0
