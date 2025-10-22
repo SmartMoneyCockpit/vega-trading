@@ -1,0 +1,7 @@
+# src/config/smart_money.yaml
+min_rr_ratio: 3.0
+earnings_lookahead_days: 30
+pop_target: 0.60
+vol_ceiling: 2.2
+breadth_floor: 0.45
+rs_floor: 0.50

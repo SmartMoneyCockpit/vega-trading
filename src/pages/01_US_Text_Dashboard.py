@@ -1,9 +1,14 @@
 # src/pages/01_US_Text_Dashboard.py
 import os, json, pandas as pd, streamlit as st
 from src.components.tradingview_widgets import advanced_chart, economic_calendar
+from src.engine.smart_money import make_light_badge, passes_rules
+from src.components.today_queue import add as add_to_queue, render as render_queue
 
 st.set_page_config(page_title="USA Text Dashboard", page_icon="🗺️", layout="wide")
 st.title("USA Text Dashboard")
+
+# Status light banner
+st.success(make_light_badge("USA"))
 
 # Controls
 st.markdown("### 🔎 Scanner & Chart")
@@ -18,18 +23,28 @@ with left:
 
 with right:
     st.subheader("Local Scans")
-    st.caption("Put OHLCV CSVs in `data/eod/us` or set `VEGA_US_EOD_DIR` env var.")
+    data_dir = "data/eod"
+    if "USA" in "USA": data_dir = "data/eod/us"
+    elif "Mexico" in "USA": data_dir = "data/eod/mx"
+    elif "LATAM" in "USA": data_dir = "data/eod/latam"
+    else: data_dir = "data/eod/ca"
     try:
         from tools.scanners.pattern_scanners import run_scan
         kind_key = {"Rising Wedge":"rising_wedge","Falling Wedge":"falling_wedge","Vega Smart Money (Today)":"vega_smart_today"}[scan_kind]
-        data_dir = os.getenv("VEGA_US_EOD_DIR", "data/eod/us")
         res = run_scan(data_dir=data_dir, kind=kind_key, limit=50)
         if not res.empty:
+            # Apply Smart Money pass/fail
+            def _judge(sym):
+                chk = passes_rules(sym, "USA")
+                return "✅" if chk.get("pass") else "⛔"
+            res["pass"] = [ _judge(s) for s in res["symbol"] ]
             st.dataframe(res, use_container_width=True, hide_index=True)
             pick = st.selectbox("Send to chart", res["symbol"].tolist())
-            if st.button("Set Chart to Selection"):
-                st.session_state["sel_01_US_Text_Dashboard.py"] = pick
-                st.experimental_rerun()
+            cols = st.columns(2)
+            if cols[0].button("Set Chart to Selection"):
+                st.session_state["sel_01_US_Text_Dashboard.py"] = pick; st.experimental_rerun()
+            if cols[1].button("Add to Today's Trades"):
+                add_to_queue(pick, "USA"); st.toast(f"Added {pick} to Today's Trades")
         else:
             st.info("No results yet. Add CSVs to the data folder.")
     except Exception as e:
@@ -43,5 +58,14 @@ if sel:
 
 st.markdown("---")
 st.header("🗓️ Economic Calendar")
-st.caption("TradingView public calendar — free. Filters: US")
-economic_calendar(country="US", height=520)
+if "USA" in "USA":
+    economic_calendar(country="US", height=520)
+elif "Mexico" in "USA":
+    economic_calendar(country="MX,US", height=520)
+elif "LATAM" in "USA":
+    economic_calendar(country="BR,CL,AR,PE,CO", height=520)
+else:
+    economic_calendar(country="CA,US,MX", height=520)
+
+st.markdown("---")
+render_queue()
