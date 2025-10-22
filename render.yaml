@@ -1,0 +1,11 @@
+
+services:
+  - type: web
+    name: vega-trading
+    env: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: streamlit run src/app.py --server.port $PORT --server.address 0.0.0.0
+    envVars:
+      - key: EODHD_API_TOKEN
+        sync: false
