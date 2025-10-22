@@ -4,9 +4,9 @@ from src.engine.smart_money import make_light_badge, passes_rules
 from src.components.today_queue import add as add_to_queue, render as render_queue
 from src.engine.vector_metrics import compute_from_df
 
-st.set_page_config(page_title="LATAM (ex-Mexico) Text Dashboard", page_icon="🌎", layout="wide")
-st.title("LATAM (ex-Mexico) Text Dashboard")
-st.success(make_light_badge("LATAM"))
+st.set_page_config(page_title="Mexico Text Dashboard", page_icon="🇲🇽", layout="wide")
+st.title("Mexico Text Dashboard")
+st.success(make_light_badge("Mexico"))
 
 st.markdown("### 🔎 Scanner & Chart")
 left, right = st.columns([3, 2], gap="large")
@@ -17,7 +17,7 @@ with left:
         ["Rising Wedge", "Falling Wedge", "Vega Smart Money (Today)"],
         horizontal=True,
     )
-    default_symbol = st.text_input("Symbol (TradingView format)", value="BCBA:GGAL")
+    default_symbol = st.text_input("Symbol (TradingView format)", value="BMV:WALMEX")
     st.link_button(
         "🔗 Open in TradingView",
         f"https://www.tradingview.com/chart/?symbol={default_symbol}",
@@ -25,14 +25,14 @@ with left:
     )
     advanced_chart(default_symbol, height=720)
 
-    csv_path = os.path.join("data/eod/latam", (default_symbol.split(":")[-1] if ":" in default_symbol else default_symbol) + ".csv")
+    csv_path = os.path.join("data/eod/mx", (default_symbol.split(":")[-1] if ":" in default_symbol else default_symbol) + ".csv")
     if os.path.exists(csv_path):
         df = pd.read_csv(csv_path)
         m = compute_from_df(df)
         c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("RT", m["RT"]); c2.metric("RV", m["RV"]); c3.metric("RS", m["RS"]); c4.metric("CI", m["CI"]); c5.metric("VST", m["VST"])
     else:
-        st.caption("Vector metrics appear when a local CSV exists for the selected symbol (data/eod/latam/).")
+        st.caption("Vector metrics appear when a local CSV exists for the selected symbol (data/eod/mx/).")
 
 with right:
     st.subheader("Local Scans")
@@ -40,38 +40,38 @@ with right:
     kind_map = {"Rising Wedge":"rising_wedge","Falling Wedge":"falling_wedge","Vega Smart Money (Today)":"vega_smart_today"}
     kind_key = kind_map[scan_kind]
 
-    if "latam_scan_results" not in st.session_state:
-        st.session_state["latam_scan_results"] = pd.DataFrame()
+    if "mx_scan_results" not in st.session_state:
+        st.session_state["mx_scan_results"] = pd.DataFrame()
 
     run_col, clear_col = st.columns([2,1])
     if run_col.button("🔍 Run Scanner", use_container_width=True):
         try:
             from tools.scanners.pattern_scanners import run_scan
-            res = run_scan(data_dir="data/eod/latam", kind=kind_key, limit=50)
-            st.session_state["latam_scan_results"] = res
+            res = run_scan(data_dir="data/eod/mx", kind=kind_key, limit=50)
+            st.session_state["mx_scan_results"] = res
             st.success("Scanner finished successfully.")
         except Exception as e:
             st.error(f"Scanner error: {e}")
 
     if clear_col.button("🗑️ Clear", use_container_width=True):
-        st.session_state["latam_scan_results"] = pd.DataFrame()
+        st.session_state["mx_scan_results"] = pd.DataFrame()
 
-    res = st.session_state["latam_scan_results"]
+    res = st.session_state["mx_scan_results"]
     if not res.empty:
         res = res.copy()
-        res["pass"] = ["✅" if passes_rules(sym, "LATAM").get("pass") else "⛔" for sym in res["symbol"]]
+        res["pass"] = ["✅" if passes_rules(sym, "Mexico").get("pass") else "⛔" for sym in res["symbol"]]
         st.dataframe(res, use_container_width=True, hide_index=True)
 
         pick = st.selectbox("Send to chart", res["symbol"].tolist())
         a, b = st.columns(2)
         if a.button("Set Chart to Selection"):
-            st.session_state["sel_latam"] = pick; st.experimental_rerun()
+            st.session_state["sel_mx"] = pick; st.experimental_rerun()
         if b.button("Add to Today's Trades"):
-            add_to_queue(pick, "LATAM"); st.toast(f"Added {pick} to Today's Trades")
+            add_to_queue(pick, "Mexico"); st.toast(f"Added {pick} to Today's Trades")
     else:
-        st.info("Click **Run Scanner** to generate results. (Make sure CSVs exist in `data/eod/latam/`.)")
+        st.info("Click **Run Scanner** to generate results. (Make sure CSVs exist in `data/eod/mx/`.)")
 
-sel = st.session_state.get("sel_latam")
+sel = st.session_state.get("sel_mx")
 if sel:
     st.success(f"Chart updated to: {sel}")
     advanced_chart(sel if ":" in sel else sel, height=720)
@@ -79,7 +79,7 @@ if sel:
 
 st.markdown("---")
 st.header("🗓️ Economic Calendar")
-economic_calendar(country="BR,CL,AR,PE,CO", height=520)
+economic_calendar(country="MX,US", height=520)
 
 st.markdown("---")
 render_queue()
