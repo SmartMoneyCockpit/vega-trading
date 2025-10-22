@@ -1,6 +1,7 @@
-# render_cron.yaml — Example Render Cron Job (UTC schedule)
-# In Render, create a Cron Job with the schedule below and the command shown.
-# 14:45 UTC ≈ 7:45 AM PT during DST
-schedule: "45 14 * * *"
-command: "python tools/morning_post.py --key $VEGA_ADMIN_KEY"
-# Ensure VEGA_ADMIN_KEY and VEGA_NEWS_PATH are set in the Service's Environment.
+# render_cron.yaml — TWO cron entries (UTC)
+# Morning (7:45 AM PT during DST)
+- schedule: "45 14 * * *"
+  command: "python tools/daily_digest.py --variant morning --key $VEGA_ADMIN_KEY"
+# Afternoon (market wrap ~1:15 PM PT)
+- schedule: "15 20 * * *"
+  command: "python tools/daily_digest.py --variant afternoon --key $VEGA_ADMIN_KEY"

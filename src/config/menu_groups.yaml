@@ -1,0 +1,9 @@
+# src/config/menu_groups.yaml
+# Optional pointer file if your app reads menu grouping from YAML.
+groups:
+  - USA
+  - Canada
+  - Mexico
+  - LATAM (ex‑Mexico)
+  - System
+  - News
