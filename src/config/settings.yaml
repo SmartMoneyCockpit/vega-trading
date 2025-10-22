@@ -1,0 +1,5 @@
+# src/config/settings.yaml
+# Toggle external headlines in Morning Post (default: off)
+EXTERNAL_HEADLINES_ENABLED: false
+EXTERNAL_HEADLINES_LIMIT: 8
+# Reserved for future settings…
