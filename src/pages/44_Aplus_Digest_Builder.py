@@ -1,20 +1,17 @@
 
 import streamlit as st
-import pandas as pd
 from utils import title_with_flag
-from components.email_digest import send_a_plus_digest
+from components.news_store import add_update
 
 title_with_flag("A+ Digest Builder", "")
-st.info("Build an email that sends ONLY when ≥1 Buy Today appears. Provide recipients and click Send.")
+st.info("Compose an A+ Digest and post it to **News Updates** (no email).")
 
-recipients_raw = st.text_area("Recipients (comma-separated emails)", "")
-subject = st.text_input("Subject", "Vega A+ Setups")
-html = st.text_area("HTML Content", "<h3>A+ Setups</h3><p>Attach CSV/PDF from scanner or paste highlights here.</p>", height=200)
+title = st.text_input("Title", "A+ Setups — Midday Digest")
+html = st.text_area("HTML Content", "<h3>A+ Setups</h3><ul><li>SPY — Buy Today (VST 1.12)</li></ul>", height=240)
 
-if st.button("Send Test Email"):
-    recips = [e.strip() for e in recipients_raw.split(",") if e.strip()]
-    result = send_a_plus_digest(subject, html, recips)
-    if "error" in result:
-        st.error(result["error"])
+if st.button("Post to News Updates"):
+    ok = add_update(title, html)
+    if ok:
+        st.success("Posted to News Updates.")
     else:
-        st.success(f"Email sent: status {result.get('status')}")
+        st.error("Failed to post update.")
