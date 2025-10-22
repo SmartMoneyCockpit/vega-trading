@@ -3,14 +3,13 @@ from __future__ import annotations
 import os
 import pandas as pd
 
-# ---- Defaults for Smart Money thresholds ----
 DEFAULTS = {
-    "min_rr_ratio": 3.0,          # must be >= 1:3 risk:reward
-    "earnings_lookahead_days": 30, # no buys within 30 days of earnings
-    "pop_target": 0.60,           # ~60% probability of profit
-    "vol_ceiling": 2.2,           # lower is better (proxy scale 0..4)
-    "breadth_floor": 0.45,        # % advancers floor
-    "rs_floor": 0.50,             # relative strength floor
+    "min_rr_ratio": 3.0,
+    "earnings_lookahead_days": 30,
+    "pop_target": 0.60,
+    "vol_ceiling": 2.2,
+    "breadth_floor": 0.45,
+    "rs_floor": 0.50,
 }
 
 def load_config(path: str = "src/config/smart_money.yaml") -> dict:
@@ -24,7 +23,6 @@ def load_config(path: str = "src/config/smart_money.yaml") -> dict:
         pass
     return DEFAULTS.copy()
 
-# ---- Market inputs (stub; wire to live feeds later) ----
 def get_market_inputs(region: str) -> dict:
     presets = {
         "USA":    {"breadth": 0.55, "rs": 0.53, "vol": 1.9},
@@ -34,7 +32,6 @@ def get_market_inputs(region: str) -> dict:
     }
     return presets.get(region, {"breadth": 0.50, "rs": 0.50, "vol": 2.00})
 
-# ---- Core status ----
 def compute_status(region: str) -> dict:
     cfg = load_config()
     m = get_market_inputs(region)
@@ -50,14 +47,19 @@ def make_light_badge(region: str) -> str:
     s = compute_status(region)
     return f"{s['light']}  •  Score {s['score']}  •  Breadth {s['breadth']:.0%}  •  RS {s['rs']:.0%}  •  Vol {s['vol']:.2f}"
 
-# ---- Earnings helper ----
+# ---- Earnings helpers (TZ-safe) ----
 def load_earnings_calendar(path: str = "data/earnings/calendar.csv") -> pd.DataFrame:
     if os.path.exists(path):
         try:
             df = pd.read_csv(path)
             if "symbol" in df.columns and "date" in df.columns:
-                df["date"] = pd.to_datetime(df["date"])
-                return df
+                df["date"] = pd.to_datetime(df["date"], errors="coerce")
+                # Ensure timezone-naive to avoid 'datetime64[ns] vs Timestamp' errors
+                try:
+                    df["date"] = df["date"].dt.tz_localize(None)
+                except Exception:
+                    pass
+                return df.dropna(subset=["date"])
         except Exception:
             pass
     return pd.DataFrame(columns=["symbol", "date"])
@@ -68,35 +70,26 @@ def within_earnings_window(symbol: str, days: int, cal: pd.DataFrame) -> bool:
     rows = cal[cal["symbol"].str.upper() == symbol.upper()]
     if rows.empty:
         return False
-    now = pd.Timestamp.now(tz="UTC").normalize()
+    # Use naive UTC timestamps to match dataframe (datetime64[ns])
+    now = pd.Timestamp.utcnow().normalize()
     future = now + pd.Timedelta(days=days)
-    upcoming = rows[rows["date"].between(now, future)]
+    upcoming = rows[(rows["date"] >= now) & (rows["date"] <= future)]
     return not upcoming.empty
 
-# ---- Rule gate used by dashboards ----
 def passes_rules(symbol: str, region: str, rr_ratio: float = 3.0, pop: float = 0.60) -> dict:
-    """Return dict with 'pass' flag and optional 'reasons' list.
-
-    This mirrors the logic the dashboards expect (earnings window, R/R, POP, market regime).
-
-    """
     cfg = load_config()
     reasons = []
 
-    # Earnings window
     cal = load_earnings_calendar()
     if within_earnings_window(symbol, cfg["earnings_lookahead_days"], cal):
         return {"pass": False, "reasons": ["Within 30 days of earnings"]}
 
-    # Risk/Reward
     if rr_ratio < cfg["min_rr_ratio"]:
         return {"pass": False, "reasons": [f"R/R too low ({rr_ratio}:1)"]}
 
-    # Probability of Profit
     if pop < cfg["pop_target"]:
         reasons.append(f"POP below target ({int(pop*100)}%)")
 
-    # Market regime
     status = compute_status(region)
     if status["light"].startswith("🔴"):
         reasons.append("Market regime red")
