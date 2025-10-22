@@ -104,9 +104,28 @@ def render_scanner(default_list, exch, benchmark, title="VectorVest-Style Scanne
     if "error" in df.columns:
         # surface errors inline
         st.dataframe(df, use_container_width=True)
-    else:
-        # Arrange and display in the requested format
-        cols = ["ticker","price","bid","ask","%","RT","RV","RS","CI","VST","arrow"]
-        present = [c for c in cols if c in df.columns]
-        st.dataframe(df[present], use_container_width=True)
-        st.caption("Notes: RT/RV/RS/CI/VST are **proxies** derived from EOD prices (not official VectorVest). Arrows reflect intraday % change.")
+
+    # Arrange and display in the requested format
+    cols = ["ticker","price","bid","ask","%","RT","RV","RS","CI","VST","arrow"]
+    present = [c for c in cols if c in df.columns]
+    view = df[present].copy()
+
+    # Color rules: green for positive %, red for negative %. Arrow colored similarly.
+    def color_pct(val):
+        try:
+            v = float(val)
+        except Exception:
+            return ""
+        return "color: green;" if v > 0 else ("color: red;" if v < 0 else "")
+
+    def color_arrow(val):
+        if val == "▲":
+            return "color: green;"
+        elif val == "▼":
+            return "color: red;"
+        return ""  # flat stays default
+
+    styler = view.style.applymap(color_pct, subset=["%"]).applymap(color_arrow, subset=["arrow"])
+    st.dataframe(styler, use_container_width=True)
+    st.caption("Notes: RT/RV/RS/CI/VST are proxies from EOD prices (not official VectorVest). Arrows reflect intraday change.")
+
