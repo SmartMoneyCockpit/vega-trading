@@ -5,13 +5,14 @@ from pathlib import Path
 # 🔹 MUST BE FIRST STREAMLIT COMMAND
 st.set_page_config(page_title="News Updates", page_icon="📰", layout="wide")
 
-# ---- SAFE SECRET HANDLER ----
+# ---- SILENT SECRET HANDLER (NO st.secrets ACCESS) ----
 def get_secret(name: str, default=None):
-    """Read from Streamlit secrets if available; otherwise env; otherwise default."""
-    try:
-        return (st.secrets.get(name) if hasattr(st, "secrets") else None) or os.getenv(name, default)
-    except Exception:
-        return os.getenv(name, default)
+    """Environment-first; does NOT touch st.secrets to avoid Streamlit warnings."""
+    val = os.getenv(name, None)
+    if val is not None:
+        return val
+    # No env var; return default silently (avoids Streamlit's 'No secrets found' banners)
+    return default
 
 ADMIN_KEY = get_secret("VEGA_ADMIN_KEY", None)
 NEWS_ROOT = Path(get_secret("VEGA_NEWS_PATH", "data/news"))
@@ -20,10 +21,8 @@ NEWS_ROOT = Path(get_secret("VEGA_NEWS_PATH", "data/news"))
 st.title("📰 News Updates")
 
 if not ADMIN_KEY:
-    st.warning(
-        "⚠️ No `VEGA_ADMIN_KEY` found. Set it in your Render environment or secrets.toml. "
-        "This page is in read-only mode."
-    )
+    # Soft notice (not an error): page still works read-only
+    st.info("No `VEGA_ADMIN_KEY` in environment; page is in read-only mode.")
 
 # ---- Load recent news posts ----
 posts_dir = NEWS_ROOT / "posts"
