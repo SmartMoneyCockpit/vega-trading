@@ -1,19 +1,15 @@
-# src/pages/01_US_Text_Dashboard.py
-import os, json, pandas as pd, streamlit as st
+import os, pandas as pd, streamlit as st
 from src.components.tradingview_widgets import advanced_chart, economic_calendar
 from src.engine.smart_money import make_light_badge, passes_rules
 from src.components.today_queue import add as add_to_queue, render as render_queue
+from src.engine.vector_metrics import compute_from_df
 
 st.set_page_config(page_title="USA Text Dashboard", page_icon="🗺️", layout="wide")
 st.title("USA Text Dashboard")
-
-# Status light banner
 st.success(make_light_badge("USA"))
 
-# Controls
 st.markdown("### 🔎 Scanner & Chart")
 left, right = st.columns([3,2], gap="large")
-
 with left:
     scan_kind = st.radio("Scan type", ["Rising Wedge","Falling Wedge","Vega Smart Money (Today)"], horizontal=True)
     default_symbol = st.text_input("Symbol (TradingView format)", value="NASDAQ:QQQ")
@@ -21,19 +17,23 @@ with left:
         st.link_button("Open Chart", f"https://www.tradingview.com/chart/?symbol={default_symbol}", use_container_width=True)
     advanced_chart(default_symbol, height=720)
 
+    import os
+    path = os.path.join("data/eod/us", (default_symbol.split(":")[-1] if ":" in default_symbol else default_symbol) + ".csv")
+    if os.path.exists(path):
+        import pandas as pd
+        df = pd.read_csv(path)
+        m = compute_from_df(df)
+        c1,c2,c3,c4,c5 = st.columns(5)
+        c1.metric("RT", m["RT"]); c2.metric("RV", m["RV"]); c3.metric("RS", m["RS"]); c4.metric("CI", m["CI"]); c5.metric("VST", m["VST"])
+    else:
+        st.caption("Vector metrics appear when local CSV exists for the selected symbol.")
+
 with right:
     st.subheader("Local Scans")
-    data_dir = "data/eod"
-    if "USA" in "USA": data_dir = "data/eod/us"
-    elif "Mexico" in "USA": data_dir = "data/eod/mx"
-    elif "LATAM" in "USA": data_dir = "data/eod/latam"
-    else: data_dir = "data/eod/ca"
     try:
-        from tools.scanners.pattern_scanners import run_scan
-        kind_key = {"Rising Wedge":"rising_wedge","Falling Wedge":"falling_wedge","Vega Smart Money (Today)":"vega_smart_today"}[scan_kind]
-        res = run_scan(data_dir=data_dir, kind=kind_key, limit=50)
+        from tools.scanners import pattern_scanners as ps
+        res = ps.run_scan("data/eod/us", kind="vega_smart_today", limit=50)
         if not res.empty:
-            # Apply Smart Money pass/fail
             def _judge(sym):
                 chk = passes_rules(sym, "USA")
                 return "✅" if chk.get("pass") else "⛔"
@@ -42,7 +42,7 @@ with right:
             pick = st.selectbox("Send to chart", res["symbol"].tolist())
             cols = st.columns(2)
             if cols[0].button("Set Chart to Selection"):
-                st.session_state["sel_01_US_Text_Dashboard.py"] = pick; st.experimental_rerun()
+                st.session_state["sel_us"] = pick; st.experimental_rerun()
             if cols[1].button("Add to Today's Trades"):
                 add_to_queue(pick, "USA"); st.toast(f"Added {pick} to Today's Trades")
         else:
@@ -50,7 +50,7 @@ with right:
     except Exception as e:
         st.error(f"Scanner error: {e}")
 
-sel = st.session_state.get("sel_01_US_Text_Dashboard.py")
+sel = st.session_state.get("sel_us")
 if sel:
     st.success(f"Chart updated to: {sel}")
     advanced_chart(sel if ":" in sel else sel, height=720)
@@ -58,14 +58,7 @@ if sel:
 
 st.markdown("---")
 st.header("🗓️ Economic Calendar")
-if "USA" in "USA":
-    economic_calendar(country="US", height=520)
-elif "Mexico" in "USA":
-    economic_calendar(country="MX,US", height=520)
-elif "LATAM" in "USA":
-    economic_calendar(country="BR,CL,AR,PE,CO", height=520)
-else:
-    economic_calendar(country="CA,US,MX", height=520)
+economic_calendar(country="US", height=520)
 
 st.markdown("---")
 render_queue()

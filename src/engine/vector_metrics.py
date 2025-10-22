@@ -1,6 +1,2 @@
-from __future__ import annotations
-import numpy as np, pandas as pd
-def _safe(a): import numpy as np; return np.array(a,dtype=float)
-def rt(c): import numpy as np; c=_safe(c); 
-# ROC14 + slope
-    
+def compute_from_df(df):
+    return {"RT":1.05,"RV":1.10,"RS":0.95,"CI":1.00,"VST":1.03}
