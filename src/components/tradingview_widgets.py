@@ -2,7 +2,6 @@
 import streamlit as st
 
 def advanced_chart(symbol: str, height: int = 720):
-    # TradingView Advanced Chart widget embed
     html = f"""
 <div class="tradingview-widget-container" style="height:{height}px;">
   <div id="tv-advanced-chart"></div>
@@ -29,9 +28,7 @@ def advanced_chart(symbol: str, height: int = 720):
 """
     st.components.v1.html(html, height=height+20, scrolling=False)
 
-def economic_calendar(country: str = "CA", height: int = 520):
-    # TradingView Economic Calendar widget (public)
-    # country codes: US, CA, MX, etc. Multiple via comma like "US,CA,MX"
+def economic_calendar(country: str = "US", height: int = 520):
     html = f"""
 <div class="tradingview-widget-container">
   <div id="economic-calendar-widget"></div>
