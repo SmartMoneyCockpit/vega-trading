@@ -1,0 +1,1 @@
+Pages will merge into your src/pages.
