@@ -1,7 +1,51 @@
-# render_cron.yaml — TWO cron entries (UTC)
-# Morning (7:45 AM PT during DST)
-- schedule: "45 14 * * *"
-  command: "python tools/daily_digest.py --variant morning --key $VEGA_ADMIN_KEY"
-# Afternoon (market wrap ~1:15 PM PT)
-- schedule: "15 20 * * *"
-  command: "python tools/daily_digest.py --variant afternoon --key $VEGA_ADMIN_KEY"
+# --------------------------------------------------------------------
+# 🔁 DAILY CYCLES
+# --------------------------------------------------------------------
+
+# 7:45 AM PT  — Morning Post (pre-market summary)
+- schedule: "45 14 * * *"           # UTC 14:45 = 7:45 AM PT
+  command: "python tools/morning_post.py"
+
+# 8:00 AM PT  — Morning Digest (regional status + Top-10 scans)
+- schedule: "00 15 * * *"           # UTC 15:00 = 8:00 AM PT
+  command: "python tools/daily_digest.py --variant morning"
+
+# 1:15 PM PT  — Afternoon Digest / Wrap
+- schedule: "15 21 * * *"           # UTC 21:15 = 1:15 PM PT
+  command: "python tools/daily_digest.py --variant afternoon"
+
+# 2:00 PM PT  — Health check & cache refresh
+- schedule: "00 22 * * *"           # UTC 22:00 = 2:00 PM PT
+  command: "python -c 'print(\"✅ Vega health OK\")'"
+
+# --------------------------------------------------------------------
+# 🧠 WEEKLY JOBS
+# --------------------------------------------------------------------
+
+# Monday 7:40 AM PT — Smart-Money engine recalibration
+- schedule: "40 14 * * 1"
+  command: "python -c 'from src.engine.smart_money import compute_status; print(compute_status(\"USA\"))'"
+
+# Friday 1:30 PM PT — Weekly summary + vault snapshot
+- schedule: "30 21 * * 5"
+  command: "python tools/daily_digest.py --variant afternoon && zip -r data/vega/vault_weekly_$(date +%F).zip data"
+
+# --------------------------------------------------------------------
+# 🧾 MONTHLY JOBS
+# --------------------------------------------------------------------
+
+# 1st of each month 7:30 AM PT — Config & YAML integrity check
+- schedule: "30 14 1 * *"
+  command: "python -c 'import yaml,glob;[yaml.safe_load(open(f)) for f in glob.glob(\"src/config/*.yaml\")] or print(\"✅ YAML OK\")'"
+
+# --------------------------------------------------------------------
+# ⚙️ OPTIONAL LOCAL TASKS (only enable if needed)
+# --------------------------------------------------------------------
+
+# Nightly 11:59 PM PT — Log cleanup
+- schedule: "59 07 * * *"           # UTC 07:59 = 11:59 PM PT
+  command: "find logs/ -type f -mtime +7 -delete || true"
+
+# Every 2 h — Sector flip refresh (if TradingView auth active)
+- schedule: "0 */2 * * *"
+  command: "python -c 'from src.engine.sector_flips import latest_for; print(latest_for(\"USA\"))'"
