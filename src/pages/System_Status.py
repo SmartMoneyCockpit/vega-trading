@@ -19,6 +19,7 @@ if "error" in q:
 else:
     st.success(f"EODHD OK. Latency: {dt:.0f} ms, Price: {q.get('close')}")
 
-st.markdown("### Email Digest")
+st.markdown("### News Store")
 import os
-st.write({"SENDGRID_API_KEY_set": bool(os.getenv("SENDGRID_API_KEY"))})
+st.write({"VEGA_NEWS_PATH": os.getenv("VEGA_NEWS_PATH", "/data/vega_news.json"),
+          "VEGA_ADMIN_KEY_set": bool(st.secrets.get("VEGA_ADMIN_KEY", None))})
