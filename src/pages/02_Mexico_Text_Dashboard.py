@@ -1,40 +1,24 @@
 
 import streamlit as st
-import pandas as pd
 from utils import title_with_flag, ensure_token_notice
-from eodhd_client import get_price_quote
+from components.morning_report import render_morning_report
+from components.macro_calendar import render_calendar
+from components.tradingview import embed
+from components.vectorvest_scanner import render_scanner
 
 title_with_flag("Mexico Text Dashboard", "Mexico")
 ensure_token_notice()
 
-st.write("**Scope**: Country-focused text dashboard. Replace the sample tickers with your watchlist.")
-default_tickers = ['WALMEX','GMEXICO','KIMBER','ALFA']
+with st.expander("📰 Morning Report", expanded=True):
+    render_morning_report("Mexico Morning Report", [('WALMEX','MX'),('AC','MX'),('NAFTRAC','MX')], notes="Auto-summary using benchmark quotes.")
 
-col1, col2 = st.columns([1,3])
-with col1:
-    tickers = st.text_area("Tickers (one per line)", "\n".join(default_tickers)).splitlines()
+with st.expander("📆 Economic Calendar", expanded=True):
+    render_calendar("Mexico", "MX")
+
+with st.expander("📈 TradingView Chart", expanded=True):
+    sym = st.text_input("Symbol (TradingView, e.g., TSX:ZEB / NASDAQ:AMZN / BMV:WALMEX)", "BMV:WALMEX")
+    embed(sym, height=610, interval="D")
+
+with st.expander("📊 VectorVest-style Scanner", expanded=True):
     exch = st.selectbox("Exchange suffix", ['MX','BMV',''], index=0)
-    run = st.button("Fetch Latest")
-
-with col2:
-    if run:
-        data = []
-        for t in tickers:
-            t = t.strip()
-            if not t:
-                continue
-            q = get_price_quote(t, exch)
-            if "error" in q:
-                data.append({"ticker": t, "exchange": exch, "error": q["error"]})
-            else:
-                data.append({
-                    "ticker": t,
-                    "exchange": exch,
-                    "price": q.get("close") or q.get("previousClose") or q.get("lastTradePrice"),
-                    "change": q.get("change"),
-                    "change_p": q.get("change_p"),
-                    "timestamp": q.get("timestamp")
-                })
-        st.dataframe(pd.DataFrame(data), use_container_width=True)
-    else:
-        st.info("Enter tickers and click **Fetch Latest**.")
+    render_scanner(['WALMEX','GMEXICO','KIMBER','ALFA'], exch, benchmark=[('WALMEX','MX'),('AC','MX'),('NAFTRAC','MX')])
