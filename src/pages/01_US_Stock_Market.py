@@ -6,7 +6,6 @@
 import os, json, requests, pandas as pd, numpy as np, streamlit as st
 from datetime import date, timedelta
 from typing import Optional, Dict, List, Tuple
-import urllib.parse
 
 try:
     import yfinance as yf
@@ -145,12 +144,13 @@ def atr(df: pd.DataFrame, length: int = 14) -> pd.Series:
 
 def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
-    out["EMA20"]  = ema(out["Close"], 20)
-    out["EMA50"]  = ema(out["Close"], 50)
-    out["EMA200"] = ema(out["Close"], 200)
-    out["RSI14"]  = rsi(out["Close"], 14)
-    out["ATR14"]  = atr(out, 14)
+    out["EMA20"]   = ema(out["Close"], 20)
+    out["EMA50"]   = ema(out["Close"], 50)
+    out["EMA200"]  = ema(out["Close"], 200)
+    out["RSI14"]   = rsi(out["Close"], 14)
+    out["ATR14"]   = atr(out, 14)
     out["AvgVol20"]= out["Volume"].rolling(20).mean()
+    out["AvgVol30"]= out["Volume"].rolling(30).mean()   # used for RVOL
     out["High20"]  = out["High"].rolling(20).max()
     out["Low20"]   = out["Low"].rolling(20).min()
     return out
@@ -254,15 +254,23 @@ def decide_buy_today(row: pd.Series, kind: str, rt: float, vst: float) -> Tuple[
         return ("Buy in 2–3 days", entry, stop)
     return ("Wait", entry, stop)
 
+# ──────────────────────────────────────────────────────────────────────────────
+# UI — Scanner & Chart
+# ──────────────────────────────────────────────────────────────────────────────
 st.markdown("### 🔎 Scanner & Chart")
 left, right = st.columns([3, 2], gap="large")
 
+# Keep a single preview symbol in session so expanders can update it
+if "preview_symbol" not in st.session_state:
+    st.session_state["preview_symbol"] = "AAPL"
+
 with left:
     scan_kind = st.radio("Scan type", ["Rising Wedge","Falling Wedge","Long Stock","Short Stock","High Momentum Stock"], horizontal=True)
-    default_symbol = st.text_input("Symbol (TradingView format)", value="AAPL")
+    default_symbol = st.text_input("Symbol (TradingView format)", value=st.session_state["preview_symbol"])
+    st.session_state["preview_symbol"] = default_symbol
     st.link_button("🔗 Open in TradingView", f"https://www.tradingview.com/chart/?symbol={default_symbol}", use_container_width=True)
     if HAS_TV_WIDGETS:
-        advanced_chart(default_symbol, height=720)
+        advanced_chart(st.session_state["preview_symbol"], height=720)
     else:
         st.info("`advanced_chart()` not found. Chart embed skipped.")
 
@@ -299,8 +307,14 @@ with right:
     if "us_scan_df" not in st.session_state:
         st.session_state["us_scan_df"] = pd.DataFrame()
 
+    # -------- hard floors --------
+    MIN_ABS_VOLUME = 100_000
+    MIN_RVOL = 1.0  # today volume / 30D average volume
+
     @st.cache_data(ttl=300, show_spinner=False)
-    def _find_matches(kind: str, lookback: int, token: str, pool: List[str], start_offset: int, max_checks: int, max_results: int, apply_sm_flag: bool) -> pd.DataFrame:
+    def _find_matches(kind: str, lookback: int, token: str, pool: List[str],
+                      start_offset: int, max_checks: int, max_results: int,
+                      apply_sm_flag: bool) -> pd.DataFrame:
         start = (date.today() - timedelta(days=int(max(lookback * 1.2, 200)))).strftime("%Y-%m-%d")
         end   = date.today().strftime("%Y-%m-%d")
         out = []
@@ -316,6 +330,14 @@ with right:
             df = compute_indicators(df)
             row = df.iloc[-1]
 
+            # --- RVOL & Volume gates (HARD) ---
+            avg30 = float(row.get("AvgVol30") or 0.0)
+            vol_today = float(row.get("Volume") or 0.0)
+            rvol = (vol_today / avg30) if avg30 > 0 else np.nan
+            if (vol_today < MIN_ABS_VOLUME) or (np.isnan(rvol) or rvol < MIN_RVOL):
+                continue
+
+            # --- Pattern selection ---
             if kind in ("Rising Wedge","Falling Wedge"):
                 sub = df.tail(min(120, len(df)))
                 ok, score = (is_rising_wedge(sub) if kind=="Rising Wedge" else is_falling_wedge(sub))
@@ -325,10 +347,10 @@ with right:
                 ok, score = tag_short(row), float(100 - row.get("RSI14", 0))
             else:
                 ok, score = tag_momentum(row), float(row["RSI14"])
-
             if not ok:
                 continue
 
+            # --- Smart-Money prefilter (optional) ---
             sm_ok = True
             if apply_sm_flag and HAS_SM:
                 try: sm_ok = bool(sm_passes(df))
@@ -336,9 +358,9 @@ with right:
             if not sm_ok:
                 continue
 
+            # --- Scores ---
             rt = score_rt(df)
             rs = score_rs(df)
-
             eps = None; grt = None; sector = None; sales_growth = None
             if HAS_YF:
                 try:
@@ -349,7 +371,7 @@ with right:
                     sales_growth = info.get("revenueGrowth", None)
                 except Exception:
                     pass
-            rv = score_rv(float(row["Close"]), eps, grt if grt is not None else (sales_growth if sales_growth is not None else 0.1))
+            rv  = score_rv(float(row["Close"]), eps, grt if grt is not None else (sales_growth if sales_growth is not None else 0.1))
             vst = score_vst(rt, rv, rs)
             ci  = score_ci(df)
 
@@ -359,7 +381,7 @@ with right:
 
             pct_prc = (row["Close"] / df["Close"].iloc[-2] - 1.0)*100.0 if len(df) >= 2 else 0.0
             chg = row["Close"] - df["Close"].iloc[-2] if len(df) >= 2 else 0.0
-            volpct = (row["Volume"] / (row["AvgVol20"] or 1) - 1.0)*100.0
+            volpct = (vol_today / (avg30 or 1) - 1.0)*100.0
 
             out.append({
                 "Symbol": sym.upper(),
@@ -374,8 +396,9 @@ with right:
                 "Stop": round(float(stop), 4),
                 "GRT": round(float(grt if grt is not None else 0.0), 3),
                 "EPS": round(float(eps), 3) if eps not in (None, np.nan) else None,
-                "Volume": int(row["Volume"]),
-                "30D Volume": int(row["AvgVol20"]),
+                "Volume": int(vol_today),
+                "30D Volume": int(avg30),
+                "RVOL": round(float(rvol), 2),
                 "Vol %": round(float(volpct), 1),
                 "Sales Grwt": round(float(sales_growth if sales_growth is not None else 0.0), 3),
                 "Buy Today": label,
@@ -383,7 +406,13 @@ with right:
             if len(out) >= int(max_results):
                 break
 
-        return pd.DataFrame(out)
+        df_out = pd.DataFrame(out)
+        if not df_out.empty:
+            # sort by strongest RVOL then VST, then symbol
+            by = [c for c in ["RVOL","VST","Symbol"] if c in df_out.columns]
+            asc = [False, False, True][:len(by)]
+            df_out = df_out.sort_values(by=by, ascending=asc).reset_index(drop=True)
+        return df_out
 
     if st.button("🚀 Find Matches (Start from Zero)", use_container_width=True):
         if not TOKEN:
@@ -399,10 +428,29 @@ with right:
     res = st.session_state.get("us_scan_df", pd.DataFrame())
     if not res.empty:
         order = pd.Categorical(res["Buy Today"], categories=["Buy Today","Buy in 2–3 days"], ordered=True)
-        res = res.assign(_order=order).sort_values(["_order","VST"], ascending=[True, False]).drop(columns=["_order"]).reset_index(drop=True)
+        res = res.assign(_order=order).sort_values(["_order","RVOL","VST"], ascending=[True, False, False]).drop(columns=["_order"]).reset_index(drop=True)
 
-        st.dataframe(res, use_container_width=True, hide_index=True)
-        pick = st.selectbox("Preview / Queue", res["Symbol"].tolist())
+        # Primary table
+        show_cols = [c for c in ["Symbol","Sector","% PRC","RS","RT","VST","Volume","30D Volume","RVOL","Vol %","Buy Today"] if c in res.columns]
+        st.dataframe(res[show_cols], use_container_width=True, hide_index=True)
+
+        # Click-to-toggle expanders with preview & queue actions
+        st.caption("Click a row below to expand, preview in TradingView, and add to Today’s Queue.")
+        for r in res.itertuples(index=False):
+            header = f"{getattr(r,'Symbol')} — {getattr(r,'Sector','')} | RVOL {getattr(r,'RVOL',float('nan'))} | Vol {int(getattr(r,'Volume',0)):,}"
+            with st.expander(header):
+                cA, cB = st.columns([1,1])
+                with cA:
+                    if st.button(f"🔍 Preview {getattr(r,'Symbol')}", key=f"preview_{getattr(r,'Symbol')}"):
+                        st.session_state["preview_symbol"] = getattr(r,'Symbol')
+                        st.rerun()
+                    st.write(pd.Series(r._asdict() if hasattr(r,"_asdict") else res.iloc[[0]].to_dict(), name="Details"))
+                with cB:
+                    if st.button(f"➕ Add {getattr(r,'Symbol')} to Today's Queue", key=f"queue_{getattr(r,'Symbol')}"):
+                        add_to_queue(getattr(r,'Symbol'), "USA"); st.toast(f"Added {getattr(r,'Symbol')}")
+
+        # CSV + bulk queue + simple selector (kept)
+        pick = st.selectbox("Quick Preview / Queue", res["Symbol"].tolist())
         c1, c2, c3 = st.columns([1,1,1])
         with c1:
             st.download_button("⬇️ CSV", res.to_csv(index=False).encode("utf-8"),
@@ -414,36 +462,12 @@ with right:
             if st.button("➕ Add ALL to Today's Queue", use_container_width=True):
                 for s in res["Symbol"].tolist(): add_to_queue(s, "USA")
                 st.success("Queued all results.")
-
-        import streamlit.components.v1 as components
-        tv_symbol = pick if ":" in pick else pick
-        st.markdown("#### 📈 Preview (TradingView)")
-        components.html(f"""
-        <div class="tradingview-widget-container">
-          <div id="tv_scanner"></div>
-          <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-          <script type="text/javascript">
-            new TradingView.widget({{
-              "container_id": "tv_scanner",
-              "symbol": "{tv_symbol}",
-              "interval": "D",
-              "timezone": "Etc/UTC",
-              "theme": "dark",
-              "style": "1",
-              "locale": "en",
-              "studies": ["EMA@tv-basicstudies","EMA@tv-basicstudies","EMA@tv-basicstudies","RSI@tv-basicstudies"],
-              "withdateranges": true,
-              "details": true,
-              "calendar": true,
-              "autosize": true,
-              "height": 560
-            }});
-          </script>
-        </div>
-        """, height=560, scrolling=False)
     else:
         st.info("Click **Load US symbol list** → **Find Matches** to start from zero.")
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Economic Calendar & Earnings
+# ──────────────────────────────────────────────────────────────────────────────
 st.markdown("---")
 st.header("🗓️ Economic Calendar & 💼 Earnings (Split View)")
 st.markdown("<style>.inline-black-divider{width:100%;height:600px;min-height:600px;background:#000;border-radius:8px;}</style>", unsafe_allow_html=True)
@@ -489,6 +513,9 @@ with col_right:
     else:
         st.caption("Set EODHD_API_TOKEN to show earnings here.")
 
+# ──────────────────────────────────────────────────────────────────────────────
+# USA Morning Report & News
+# ──────────────────────────────────────────────────────────────────────────────
 st.markdown("---")
 st.header("📰 USA Morning Report & News")
 c1, c2 = st.columns(2)
