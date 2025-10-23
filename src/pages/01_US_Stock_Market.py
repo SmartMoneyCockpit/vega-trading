@@ -222,9 +222,46 @@ if sel:
     st.markdown(f"[Open in TradingView ↗](https://www.tradingview.com/chart/?symbol={sel})")
 
 st.markdown("---")
-st.header("🗓️ Economic Calendar")
-economic_calendar(country="US", height=520)
 
+# =========================
+# === ECON CAL + EARNINGS SPLIT
+# =========================
+st.markdown("---")
+st.header("🗓️ Economic Calendar & 💼 Earnings (Split View)")
+
+col_left, col_mid, col_right = st.columns([0.475, 0.05, 0.475], gap="small")
+
+with col_left:
+    st.subheader("📆 Economic Calendar")
+    economic_calendar(country="US", height=520)
+
+with col_mid:
+    st.markdown(
+        "<div style='width:100%;height:100%;min-height:580px;background:black;border-radius:6px;'></div>",
+        unsafe_allow_html=True
+    )
+
+with col_right:
+    st.subheader("💼 Upcoming Earnings")
+    try:
+        import pandas as _pd
+        import datetime as _dt
+        _csv_path = "data/earnings/calendar.csv"
+        if os.path.exists(_csv_path):
+            _df = _pd.read_csv(_csv_path)
+            _df["date"] = _pd.to_datetime(_df["date"], errors="coerce")
+            _today = _pd.Timestamp(_dt.date.today())
+            _horizon_days = st.slider("Horizon (days)", min_value=7, max_value=120, value=60, step=7)
+            _limit = _today + _pd.Timedelta(days=_horizon_days)
+            _up = _df[_df["date"].between(_today, _limit)].sort_values("date")
+            if _up.empty:
+                st.info("No upcoming earnings within the selected horizon.")
+            else:
+                st.dataframe(_up.reset_index(drop=True), use_container_width=True, hide_index=True)
+        else:
+            st.info("`data/earnings/calendar.csv` not found. Add earnings to display upcoming symbols.")
+    except Exception as _e:
+        st.warning(f"Earnings panel encountered an issue: {_e}")
 # =========================
 # === NEWS & MORNING REPORT
 # =========================
