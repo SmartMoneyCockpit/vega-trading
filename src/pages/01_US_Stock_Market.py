@@ -201,19 +201,19 @@ def compute_stop(row: pd.Series) -> float:
 # Minimal A/B setup gates (lowest safe thresholds)
 # ──────────────────────────────────────────────────────────────────────────────
 def gate_long_minimal(row: pd.Series) -> bool:
-    # Lowest safe: basic up-bias + not weak momentum
+    # Lowest safe: light up-bias + not weak momentum
     up_bias = (row["EMA20"] >= row["EMA50"]) or (row["Close"] >= row["EMA20"])
-    rsi_ok  = row["RSI14"] >= 45
+    rsi_ok  = row["RSI14"] >= 40
     return bool(up_bias and rsi_ok)
 
 def gate_short_minimal(row: pd.Series) -> bool:
-    # Lowest safe: basic down-bias + not overbought
+    # Lowest safe: light down-bias + not overbought
     down_bias = (row["EMA20"] <= row["EMA50"]) or (row["Close"] <= row["EMA20"])
-    rsi_ok    = row["RSI14"] <= 55
+    rsi_ok    = row["RSI14"] <= 60
     return bool(down_bias and rsi_ok)
 
 def decide_buy_today(row: pd.Series, is_long: bool, rt: float, vst: float) -> Tuple[str, float, float]:
-    # Gentle "A+1" logic — prefer trend alignment, allow mild pullbacks
+    # Gentle "A+1" logic — prefer alignment, allow mild pullbacks
     if is_long:
         ok_now = (row["EMA20"] >= row["EMA50"]) and (row["RSI14"] >= 50) and (row["Close"] >= 0.97*(row["High20"] or row["Close"]))
         almost = (row["EMA20"] >= row["EMA50"]) and (row["RSI14"] >= 45)
@@ -231,21 +231,30 @@ def decide_buy_today(row: pd.Series, is_long: bool, rt: float, vst: float) -> Tu
     return ("Wait", entry, stop)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Smart Money tracer
+# Smart Money tracer (resilient wrapper)
 # ──────────────────────────────────────────────────────────────────────────────
 def _sm_eval(symbol: str, price=None, ctx=None):
+    # If SM isn't loaded, do NOT block — log reason but allow
     if not HAS_SM:
-        return False, ["smart_money_not_loaded"]
+        return True, ["smart_money_not_loaded_but_allowed"]
+    # Try common signatures in order; if all fail, allow but log
     try:
+        # 1) symbol, price, context, return_details
         ok, details = sm_passes(symbol=symbol, price=price, context=ctx, return_details=True)
         reasons = details.get("fail_reasons", []) if not ok else []
         return ok, reasons
     except TypeError:
         try:
-            ok = sm_passes(symbol)
-            return (ok, [] if ok else ["failed_unknown"])
-        except Exception as e:
-            return False, [f"error:{type(e).__name__}"]
+            # 2) df-based signature (some builds)
+            if "df" in globals():
+                ok, details = sm_passes(df=globals()["df"], return_details=True)  # type: ignore
+                reasons = details.get("fail_reasons", []) if not ok else []
+                return ok, reasons
+        except Exception:
+            pass
+    except Exception:
+        pass
+    return True, ["smart_money_error_bypassed"]
 
 def _render_sm_summary(total_checked: int, reasons_counter: Counter, fail_examples_df: pd.DataFrame):
     st.markdown(f"**Smart Money filter summary:** checked `{total_checked}` symbols")
@@ -295,7 +304,8 @@ with right:
             if df_all.empty:
                 st.warning("Could not retrieve US symbol list.")
             else:
-                ex_ok = {"NYSE","NASDAQ","AMEX","NYSE MKT","BATS","ARCX","OTC"}
+                # Exclude OTC to avoid illiquid universe
+                ex_ok = {"NYSE","NASDAQ","AMEX","NYSE MKT","BATS","ARCX"}
                 if "Exchange" in df_all.columns:
                     df_all = df_all[df_all["Exchange"].astype(str).str.upper().isin(ex_ok)]
                 if "Type" in df_all.columns:
@@ -313,8 +323,8 @@ with right:
     if "us_sm_fail_examples" not in st.session_state:
         st.session_state["us_sm_fail_examples"] = pd.DataFrame()
 
-    # Minimal floors (liquidity only)
-    MIN_ABS_VOLUME = 100_000   # keep liquidity sane; RVOL requirement removed
+    # Liquidity floor (stable): 30D average volume
+    MIN_AVG30_VOLUME = 100_000
 
     @st.cache_data(ttl=300, show_spinner=False)
     def _find_matches(is_long: bool, lookback: int, token: str, pool: List[str],
@@ -333,20 +343,20 @@ with right:
                 break
             df = fetch_ohlcv(_eod_us(sym), start, end, token)
             processed += 1
-            if df.empty or len(df) < 120:
+            if df.empty or len(df) < 60:
                 reasons_counter["data_insufficient"] += 1
                 fail_rows.append({"Symbol": sym, "Reason": "data_insufficient"})
                 continue
 
-            df = df.tail(max(lookback, 120))
+            df = df.tail(max(lookback, 60))
             df = compute_indicators(df)
             row = df.iloc[-1]
 
-            # Liquidity only (no RVOL gate)
-            vol_today = float(row.get("Volume") or 0.0)
-            if vol_today < MIN_ABS_VOLUME:
-                reasons_counter["liquidity_abs_floor"] += 1
-                fail_rows.append({"Symbol": sym, "Reason": "liquidity_abs_floor"})
+            # Liquidity (AvgVol30 floor) — stable vs today's print
+            avg30 = float(row.get("AvgVol30") or 0.0)
+            if avg30 < MIN_AVG30_VOLUME:
+                reasons_counter["liquidity_avg30_floor"] += 1
+                fail_rows.append({"Symbol": sym, "Reason": "liquidity_avg30_floor"})
                 continue
 
             # Minimal setup gates
@@ -357,7 +367,8 @@ with right:
                 fail_rows.append({"Symbol": sym, "Reason": reasons})
                 continue
 
-            # Smart Money prefilter (kept)
+            # Smart Money prefilter (kept, resilient)
+            globals()["df"] = df  # expose for possible df-based SM signature
             sm_ok = True
             sm_reasons: List[str] = []
             if apply_sm_flag and HAS_SM:
@@ -409,7 +420,7 @@ with right:
                 "CI": round(float(ci), 3),
                 "Stop": round(float(stop), 4),
                 "EPS": round(float(eps), 3) if eps not in (None, np.nan) else None,
-                "Volume": int(vol_today),
+                "AvgVol30": int(avg30),
                 "Buy Today": label,
             })
             if len(out) >= int(max_results):
@@ -455,7 +466,7 @@ with right:
 
     if not res.empty:
         st.markdown("### Smart Money — Passed")
-        show_cols = [c for c in ["Symbol","Side","Sector","% PRC","RS","RT","VST","Volume","Buy Today"] if c in res.columns]
+        show_cols = [c for c in ["Symbol","Side","Sector","% PRC","RS","RT","VST","AvgVol30","Buy Today"] if c in res.columns]
         st.dataframe(res[show_cols], use_container_width=True, hide_index=True)
 
         st.caption("Click a row below to expand, preview in TradingView, and add to Today’s Queue.")
