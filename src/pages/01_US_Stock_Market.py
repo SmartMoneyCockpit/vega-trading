@@ -213,7 +213,7 @@ if sel:
 st.markdown("---")
 
 # =========================
-# === ECON CAL + EARNINGS SPLIT (TRADINGVIEW EMBEDS)
+# === ECON CAL + EARNINGS SPLIT (TRADINGVIEW EMBEDS, USA ONLY)
 # =========================
 st.markdown("---")
 st.header("🗓️ Economic Calendar & 💼 Earnings (Split View)")
@@ -221,17 +221,14 @@ st.header("🗓️ Economic Calendar & 💼 Earnings (Split View)")
 col_left, col_mid, col_right = st.columns([0.475, 0.05, 0.475], gap="small")
 
 with col_left:
-    st.subheader("📆 Economic Calendar (TradingView)")
+    st.subheader("📆 Economic Calendar (TradingView • USA)")
     st.components.v1.html(
         """
         <div class="tradingview-widget-container">
           <iframe
             src="https://s.tradingview.com/embed-widget/economic-calendar/?locale=en#%7B%22width%22%3A%22100%25%22%2C%22height%22%3A600%2C%22colorTheme%22%3A%22light%22%2C%22isTransparent%22%3Afalse%2C%22importanceFilter%22%3A%22-1%2C0%2C1%22%2C%22country%22%3A%22US%22%7D"
-            width="100%"
-            height="600"
-            frameborder="0"
-            allowtransparency="true"
-            scrolling="no"></iframe>
+            width="100%" height="600" frameborder="0" scrolling="no" allowtransparency="true">
+          </iframe>
         </div>
         """,
         height=620
@@ -244,17 +241,14 @@ with col_mid:
     )
 
 with col_right:
-    st.subheader("💼 Upcoming U.S. Earnings (TradingView Screener)")
+    st.subheader("💼 Upcoming Earnings (TradingView • USA)")
     st.components.v1.html(
         """
         <div class="tradingview-widget-container">
           <iframe
             src="https://s.tradingview.com/embed-widget/screener/?locale=en#%7B%22defaultScreen%22%3A%22upcoming_earnings%22%2C%22defaultColumn%22%3A%22earnings_date%22%2C%22defaultFilter%22%3A%22country%3Dunited_states%22%2C%22width%22%3A%22100%25%22%2C%22height%22%3A600%2C%22colorTheme%22%3A%22light%22%2C%22isTransparent%22%3Afalse%7D"
-            width="100%"
-            height="600"
-            frameborder="0"
-            allowtransparency="true"
-            scrolling="no"></iframe>
+            width="100%" height="600" frameborder="0" scrolling="no" allowtransparency="true">
+          </iframe>
         </div>
         """,
         height=620
