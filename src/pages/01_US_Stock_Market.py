@@ -1,21 +1,22 @@
 # US_Stock_Market.py
-# USA Text Dashboard — Start-from-zero Pattern Scanner + Vector-style Output + EODHD Earnings + TV Calendar + EODHD News
+# USA Text Dashboard — A/B Smart Money Scanner (Minimal Filters) + Earnings + TV Calendar + News
 # Requires: EODHD_API_TOKEN in env or st.secrets
 # Also uses: yfinance (pip install yfinance)
 
 import os, json, requests, pandas as pd, numpy as np, streamlit as st
 from datetime import date, timedelta
 from typing import Optional, Dict, List, Tuple
+from collections import Counter
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Optional libs
+# ──────────────────────────────────────────────────────────────────────────────
 try:
     import yfinance as yf
     HAS_YF = True
 except Exception:
     HAS_YF = False
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Optional integrations (graceful fallbacks)
-# ──────────────────────────────────────────────────────────────────────────────
 try:
     from src.components.tradingview_widgets import advanced_chart
     HAS_TV_WIDGETS = True
@@ -66,14 +67,14 @@ except Exception:
     HAS_VECTOR = False
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Page setup
+# Page
 # ──────────────────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="USA Text Dashboard", page_icon="🗺️", layout="wide")
-st.title("USA Text Dashboard")
+st.title("USA Text Dashboard — A/B Smart Money")
 st.success(make_light_badge("USA"))
 
 # ──────────────────────────────────────────────────────────────────────────────
-# EODHD token & helpers
+# Token / HTTP helpers
 # ──────────────────────────────────────────────────────────────────────────────
 def _token()->Optional[str]:
     tok = os.getenv("EODHD_API_TOKEN")
@@ -95,7 +96,7 @@ def _safe_get(url: str, params: Dict, timeout: int = 25):
     return None
 
 # ──────────────────────────────────────────────────────────────────────────────
-# EODHD APIs: US symbol list, OHLCV, Earnings, News
+# EODHD APIs
 # ──────────────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=600, show_spinner=False)
 def eod_exchange_symbols_us(token: str) -> pd.DataFrame:
@@ -121,7 +122,7 @@ def _eod_us(sym: str) -> str:
     return sym if "." in sym else f"{sym}.US"
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Indicators & pattern logic
+# Indicators (minimal)
 # ──────────────────────────────────────────────────────────────────────────────
 def ema(series: pd.Series, length: int) -> pd.Series:
     return series.ewm(span=length, adjust=False).mean()
@@ -149,49 +150,14 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     out["EMA200"]  = ema(out["Close"], 200)
     out["RSI14"]   = rsi(out["Close"], 14)
     out["ATR14"]   = atr(out, 14)
-    out["AvgVol20"]= out["Volume"].rolling(20).mean()
-    out["AvgVol30"]= out["Volume"].rolling(30).mean()   # used for RVOL
+    out["AvgVol30"]= out["Volume"].rolling(30).mean()
     out["High20"]  = out["High"].rolling(20).max()
     out["Low20"]   = out["Low"].rolling(20).min()
     return out
 
-def _linreg(x, y):
-    x = np.asarray(x, dtype=float); y = np.asarray(y, dtype=float)
-    if len(x) < 2: return (0.0, 0.0)
-    A = np.vstack([x, np.ones(len(x))]).T
-    m, b = np.linalg.lstsq(A, y, rcond=None)[0]
-    return m, b
-
-def _channel(df: pd.DataFrame):
-    idx = np.arange(len(df))
-    m_hi, _ = _linreg(idx, df["High"].values)
-    m_lo, _ = _linreg(idx, df["Low"].values)
-    fit_hi = -np.mean(np.abs((m_hi*idx + df["High"].mean()) - df["High"].values))
-    fit_lo = -np.mean(np.abs((m_lo*idx + df["Low"].mean())  - df["Low"].values))
-    return m_hi, m_lo, (fit_hi + fit_lo) / 2.0
-
-def is_rising_wedge(df: pd.DataFrame):
-    m_hi, m_lo, fit = _channel(df)
-    ok = (m_hi > 0) and (m_lo > 0) and (m_hi < m_lo)
-    score = float(fit + (m_lo - m_hi))
-    return ok, score
-
-def is_falling_wedge(df: pd.DataFrame):
-    m_hi, m_lo, fit = _channel(df)
-    ok = (m_hi < 0) and (m_lo < 0) and (m_lo > m_hi)
-    score = float(fit + (m_lo - m_hi))
-    return ok, score
-
-def tag_long(row: pd.Series) -> bool:
-    return bool(row["EMA20"] > row["EMA50"] > row["EMA200"] and row["Close"] > row["EMA20"] and row["RSI14"] >= 50)
-
-def tag_short(row: pd.Series) -> bool:
-    return bool(row["EMA20"] < row["EMA50"] < row["EMA200"] and row["Close"] < row["EMA20"] and row["RSI14"] <= 50)
-
-def tag_momentum(row: pd.Series) -> bool:
-    return bool(row["EMA20"] > row["EMA50"] > row["EMA200"] and row["RSI14"] >= 60 and row["Close"] >= 0.98*(row["High20"] or row["Close"]) and row["Volume"] >= 1.2*(row["AvgVol20"] or 1))
-
-# ───────── Vector-style scoring (approximations) ─────────
+# ──────────────────────────────────────────────────────────────────────────────
+# Minimal Vector-style metrics
+# ──────────────────────────────────────────────────────────────────────────────
 def score_rt(df: pd.DataFrame) -> float:
     if len(df) < 60: return 0.0
     c = df["Close"]
@@ -231,48 +197,50 @@ def score_ci(df: pd.DataFrame) -> float:
 def compute_stop(row: pd.Series) -> float:
     return round(float(row["EMA50"] - 2.0*row["ATR14"]), 4)
 
-def decide_buy_today(row: pd.Series, kind: str, rt: float, vst: float) -> Tuple[str, float, float]:
-    near_break = row["Close"] >= 0.99*(row["High20"] or row["Close"])
-    pullback_ok = row["Close"] > row["EMA20"] and row["EMA20"] > row["EMA50"]
-    vol_ok = row["Volume"] >= 1.2*(row["AvgVol20"] or 1)
-    trend_up = row["EMA20"] > row["EMA50"] > row["EMA200"]
-    momentum_ok = row["RSI14"] >= 55
+# ──────────────────────────────────────────────────────────────────────────────
+# Minimal A/B setup gates (lowest safe thresholds)
+# ──────────────────────────────────────────────────────────────────────────────
+def gate_long_minimal(row: pd.Series) -> bool:
+    # Lowest safe: basic up-bias + not weak momentum
+    up_bias = (row["EMA20"] >= row["EMA50"]) or (row["Close"] >= row["EMA20"])
+    rsi_ok  = row["RSI14"] >= 45
+    return bool(up_bias and rsi_ok)
 
-    ok_now = trend_up and momentum_ok and (near_break or pullback_ok) and vol_ok
-    if kind == "Short Stock":
-        ok_now = (row["EMA20"] < row["EMA50"] < row["EMA200"]) and row["RSI14"] <= 45 and vol_ok
+def gate_short_minimal(row: pd.Series) -> bool:
+    # Lowest safe: basic down-bias + not overbought
+    down_bias = (row["EMA20"] <= row["EMA50"]) or (row["Close"] <= row["EMA20"])
+    rsi_ok    = row["RSI14"] <= 55
+    return bool(down_bias and rsi_ok)
+
+def decide_buy_today(row: pd.Series, is_long: bool, rt: float, vst: float) -> Tuple[str, float, float]:
+    # Gentle "A+1" logic — prefer trend alignment, allow mild pullbacks
+    if is_long:
+        ok_now = (row["EMA20"] >= row["EMA50"]) and (row["RSI14"] >= 50) and (row["Close"] >= 0.97*(row["High20"] or row["Close"]))
+        almost = (row["EMA20"] >= row["EMA50"]) and (row["RSI14"] >= 45)
+    else:
+        ok_now = (row["EMA20"] <= row["EMA50"]) and (row["RSI14"] <= 50) and (row["Close"] <= 1.03*(row["Low20"] or row["Close"]))
+        almost = (row["EMA20"] <= row["EMA50"]) and (row["RSI14"] <= 55)
 
     entry = float(row["Close"])
     stop  = compute_stop(row)
 
-    if ok_now and rt >= 1.05 and vst >= 1.0:
+    if ok_now and rt >= 1.0 and vst >= 0.9:
         return ("Buy Today", entry, stop)
-    almost = trend_up and row["RSI14"] >= 50 and row["Close"] >= 0.97*(row["High20"] or row["Close"])
-    if kind == "Short Stock":
-        almost = (row["EMA20"] < row["EMA50"] < row["EMA200"]) and row["RSI14"] <= 50 and row["Close"] <= 1.03*(row["Low20"] or row["Close"])
-    if almost and rt >= 1.0 and vst >= 0.95:
+    if almost and rt >= 0.9 and vst >= 0.85:
         return ("Buy in 2–3 days", entry, stop)
     return ("Wait", entry, stop)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Smart Money tracer (why things get filtered)
+# Smart Money tracer
 # ──────────────────────────────────────────────────────────────────────────────
-from collections import Counter
-
 def _sm_eval(symbol: str, price=None, ctx=None):
-    """
-    Returns (ok, reasons:list[str]).
-    Uses return_details=True if available; otherwise falls back to boolean-only.
-    """
     if not HAS_SM:
         return False, ["smart_money_not_loaded"]
-    # Try detailed signature first
     try:
         ok, details = sm_passes(symbol=symbol, price=price, context=ctx, return_details=True)
         reasons = details.get("fail_reasons", []) if not ok else []
         return ok, reasons
     except TypeError:
-        # Fallback to boolean-only signature
         try:
             ok = sm_passes(symbol)
             return (ok, [] if ok else ["failed_unknown"])
@@ -280,7 +248,6 @@ def _sm_eval(symbol: str, price=None, ctx=None):
             return False, [f"error:{type(e).__name__}"]
 
 def _render_sm_summary(total_checked: int, reasons_counter: Counter, fail_examples_df: pd.DataFrame):
-    passed = total_checked - sum(reasons_counter.values())  # rough (when recording only fails once)
     st.markdown(f"**Smart Money filter summary:** checked `{total_checked}` symbols")
     if reasons_counter:
         st.markdown("**Top filter reasons**")
@@ -291,32 +258,30 @@ def _render_sm_summary(total_checked: int, reasons_counter: Counter, fail_exampl
         st.dataframe(fail_examples_df.head(25), use_container_width=True, height=360)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# UI — Scanner & Chart
+# UI — Two-option Scanner (A=Long, B=Short)
 # ──────────────────────────────────────────────────────────────────────────────
-st.markdown("### 🔎 Scanner & Chart")
+st.markdown("### 🔎 A/B Smart Money Scanner (Minimal Filters)")
 left, right = st.columns([3, 2], gap="large")
 
-# Keep a single preview symbol in session so expanders can update it
 if "preview_symbol" not in st.session_state:
     st.session_state["preview_symbol"] = "AAPL"
 
 with left:
-    scan_kind = st.radio("Scan type", ["Rising Wedge","Falling Wedge","Long Stock","Short Stock","High Momentum Stock"], horizontal=True)
+    mode = st.radio("Mode", ["A — Long (Smart Money)","B — Short (Smart Money)"], horizontal=True)
     default_symbol = st.text_input("Symbol (TradingView format)", value=st.session_state["preview_symbol"])
     st.session_state["preview_symbol"] = default_symbol
     st.link_button("🔗 Open in TradingView", f"https://www.tradingview.com/chart/?symbol={default_symbol}", use_container_width=True)
     if HAS_TV_WIDGETS:
-        # use your preferred theme inside your advanced_chart implementation
         advanced_chart(st.session_state["preview_symbol"], height=720)
     else:
         st.info("`advanced_chart()` not found. Chart embed skipped.")
 
 with right:
-    st.subheader("Start from Zero — Find Matches (USA only)")
+    st.subheader("Universe Scan (USA)")
     lookback     = st.number_input("Lookback bars", 150, 3000, 420, 10)
-    apply_sm     = st.checkbox("Apply Smart Money pre-filter (if available)", value=True)
-    max_checks   = st.number_input("HARD CAP: symbols to process", 50, 1000, 100, 25)
-    max_results  = st.number_input("Max matches to return", 5, 1000, 150, 5)
+    apply_sm     = st.checkbox("Apply Smart Money pre-filter", value=True)
+    max_checks   = st.number_input("HARD CAP: symbols to process", 50, 2000, 200, 50)
+    max_results  = st.number_input("Max matches to return", 5, 2000, 200, 5)
     start_offset = st.number_input("Start offset in symbol list", 0, 50000, 0, 100)
 
     if "us_symbol_pool" not in st.session_state:
@@ -348,12 +313,11 @@ with right:
     if "us_sm_fail_examples" not in st.session_state:
         st.session_state["us_sm_fail_examples"] = pd.DataFrame()
 
-    # -------- hard floors --------
-    MIN_ABS_VOLUME = 100_000
-    MIN_RVOL = 1.0  # today volume / 30D average volume
+    # Minimal floors (liquidity only)
+    MIN_ABS_VOLUME = 100_000   # keep liquidity sane; RVOL requirement removed
 
     @st.cache_data(ttl=300, show_spinner=False)
-    def _find_matches(kind: str, lookback: int, token: str, pool: List[str],
+    def _find_matches(is_long: bool, lookback: int, token: str, pool: List[str],
                       start_offset: int, max_checks: int, max_results: int,
                       apply_sm_flag: bool):
         start = (date.today() - timedelta(days=int(max(lookback * 1.2, 200)))).strftime("%Y-%m-%d")
@@ -370,7 +334,6 @@ with right:
             df = fetch_ohlcv(_eod_us(sym), start, end, token)
             processed += 1
             if df.empty or len(df) < 120:
-                # record as data_insufficient to explain drop-offs
                 reasons_counter["data_insufficient"] += 1
                 fail_rows.append({"Symbol": sym, "Reason": "data_insufficient"})
                 continue
@@ -379,46 +342,27 @@ with right:
             df = compute_indicators(df)
             row = df.iloc[-1]
 
-            # --- RVOL & Volume gates (HARD) ---
-            avg30 = float(row.get("AvgVol30") or 0.0)
+            # Liquidity only (no RVOL gate)
             vol_today = float(row.get("Volume") or 0.0)
-            rvol = (vol_today / avg30) if avg30 > 0 else np.nan
-            if (vol_today < MIN_ABS_VOLUME) or (np.isnan(rvol) or rvol < MIN_RVOL):
-                reasons_counter["liquidity_rvol_floor"] += 1
-                fail_rows.append({"Symbol": sym, "Reason": "liquidity_rvol_floor"})
+            if vol_today < MIN_ABS_VOLUME:
+                reasons_counter["liquidity_abs_floor"] += 1
+                fail_rows.append({"Symbol": sym, "Reason": "liquidity_abs_floor"})
                 continue
 
-            # --- Pattern selection ---
-            if kind in ("Rising Wedge","Falling Wedge"):
-                sub = df.tail(min(120, len(df)))
-                ok, score = (is_rising_wedge(sub) if kind=="Rising Wedge" else is_falling_wedge(sub))
-                if not ok:
-                    reasons_counter["pattern_miss"] += 1
-                    fail_rows.append({"Symbol": sym, "Reason": "pattern_miss"})
-                    continue
-            elif kind == "Long Stock":
-                if not tag_long(row):
-                    reasons_counter["trend_long_fail"] += 1
-                    fail_rows.append({"Symbol": sym, "Reason": "trend_long_fail"})
-                    continue
-            elif kind == "Short Stock":
-                if not tag_short(row):
-                    reasons_counter["trend_short_fail"] += 1
-                    fail_rows.append({"Symbol": sym, "Reason": "trend_short_fail"})
-                    continue
-            else:
-                if not tag_momentum(row):
-                    reasons_counter["momentum_fail"] += 1
-                    fail_rows.append({"Symbol": sym, "Reason": "momentum_fail"})
-                    continue
+            # Minimal setup gates
+            ok_setup = gate_long_minimal(row) if is_long else gate_short_minimal(row)
+            if not ok_setup:
+                reasons = "long_setup_min_fail" if is_long else "short_setup_min_fail"
+                reasons_counter[reasons] += 1
+                fail_rows.append({"Symbol": sym, "Reason": reasons})
+                continue
 
-            # --- Smart-Money prefilter (optional) ---
+            # Smart Money prefilter (kept)
             sm_ok = True
             sm_reasons: List[str] = []
             if apply_sm_flag and HAS_SM:
                 ok, r = _sm_eval(sym, price=float(row["Close"]), ctx={"benchmark":"SPY"})
-                sm_ok = bool(ok)
-                sm_reasons = r
+                sm_ok = bool(ok); sm_reasons = r
             if not sm_ok:
                 if not sm_reasons:
                     sm_reasons = ["smart_money_fail"]
@@ -427,7 +371,7 @@ with right:
                 fail_rows.append({"Symbol": sym, "Reason": ", ".join(sm_reasons)[:240]})
                 continue
 
-            # --- Scores ---
+            # Scores (light)
             rt = score_rt(df)
             rs = score_rs(df)
             eps = None; grt = None; sector = None; sales_growth = None
@@ -444,7 +388,7 @@ with right:
             vst = score_vst(rt, rv, rs)
             ci  = score_ci(df)
 
-            label, entry, stop = decide_buy_today(row, kind, rt, vst)
+            label, entry, stop = decide_buy_today(row, is_long, rt, vst)
             if label == "Wait":
                 reasons_counter["buy_logic_wait"] += 1
                 fail_rows.append({"Symbol": sym, "Reason": "buy_logic_wait"})
@@ -452,26 +396,20 @@ with right:
 
             pct_prc = (row["Close"] / df["Close"].iloc[-2] - 1.0)*100.0 if len(df) >= 2 else 0.0
             chg = row["Close"] - df["Close"].iloc[-2] if len(df) >= 2 else 0.0
-            volpct = (vol_today / (avg30 or 1) - 1.0)*100.0
 
             out.append({
                 "Symbol": sym.upper(),
+                "Side": "LONG" if is_long else "SHORT",
                 "Sector": sector or "",
                 "$ Change (From Yesterday)": round(float(chg), 4),
                 "% PRC": round(float(pct_prc), 2),
-                "Value": round(float(rv), 3),
                 "RS": round(float(rs), 3),
                 "RT": round(float(rt), 3),
                 "VST": round(float(vst), 3),
                 "CI": round(float(ci), 3),
                 "Stop": round(float(stop), 4),
-                "GRT": round(float(grt if grt is not None else 0.0), 3),
                 "EPS": round(float(eps), 3) if eps not in (None, np.nan) else None,
                 "Volume": int(vol_today),
-                "30D Volume": int(avg30),
-                "RVOL": round(float(rvol), 2),
-                "Vol %": round(float(volpct), 1),
-                "Sales Grwt": round(float(sales_growth if sales_growth is not None else 0.0), 3),
                 "Buy Today": label,
             })
             if len(out) >= int(max_results):
@@ -481,23 +419,23 @@ with right:
         fail_df = pd.DataFrame(fail_rows)
         total_checked = processed
 
-        # Sort results (if any)
         if not df_out.empty:
-            by = [c for c in ["RVOL","VST","Symbol"] if c in df_out.columns]
-            asc = [False, False, True][:len(by)]
+            by = [c for c in ["VST","RS","RT","Symbol"] if c in df_out.columns]
+            asc = [False, False, False, True][:len(by)]
             df_out = df_out.sort_values(by=by, ascending=asc).reset_index(drop=True)
 
         return df_out, reasons_counter, fail_df, total_checked
 
-    if st.button("🚀 Find Matches (Start from Zero)", use_container_width=True):
+    if st.button("🚀 Scan (A/B)", use_container_width=True):
         if not TOKEN:
             st.error("EODHD token missing — set EODHD_API_TOKEN.")
         elif not pool:
             st.warning("Load the US symbol list first (click 'Load US symbol list').")
         else:
-            with st.spinner("Scanning for pattern matches…"):
+            with st.spinner("Scanning…"):
+                is_long = (mode.startswith("A"))
                 res, sm_counts, sm_fail_df, total_checked = _find_matches(
-                    scan_kind, lookback, TOKEN, pool, int(start_offset), int(max_checks), int(max_results), apply_sm
+                    is_long, lookback, TOKEN, pool, int(start_offset), int(max_checks), int(max_results), apply_sm
                 )
             st.session_state["us_scan_df"] = res
             st.session_state["us_sm_counts"] = sm_counts
@@ -509,7 +447,6 @@ with right:
     sm_counts = st.session_state.get("us_sm_counts", Counter())
     sm_fail_df = st.session_state.get("us_sm_fail_examples", pd.DataFrame())
 
-    # Show Smart Money summary regardless of matches to see why it went to zero
     _render_sm_summary(
         total_checked = (0 if sm_counts is None else (sum(sm_counts.values()) + len(res))),
         reasons_counter = sm_counts if isinstance(sm_counts, Counter) else Counter(),
@@ -517,18 +454,13 @@ with right:
     )
 
     if not res.empty:
-        order = pd.Categorical(res["Buy Today"], categories=["Buy Today","Buy in 2–3 days"], ordered=True)
-        res = res.assign(_order=order).sort_values(["_order","RVOL","VST"], ascending=[True, False, False]).drop(columns=["_order"]).reset_index(drop=True)
-
-        # Primary table
-        show_cols = [c for c in ["Symbol","Sector","% PRC","RS","RT","VST","Volume","30D Volume","RVOL","Vol %","Buy Today"] if c in res.columns]
         st.markdown("### Smart Money — Passed")
+        show_cols = [c for c in ["Symbol","Side","Sector","% PRC","RS","RT","VST","Volume","Buy Today"] if c in res.columns]
         st.dataframe(res[show_cols], use_container_width=True, hide_index=True)
 
-        # Click-to-toggle expanders with preview & queue actions
         st.caption("Click a row below to expand, preview in TradingView, and add to Today’s Queue.")
         for r in res.itertuples(index=False):
-            header = f"{getattr(r,'Symbol')} — {getattr(r,'Sector','')} | RVOL {getattr(r,'RVOL',float('nan'))} | Vol {int(getattr(r,'Volume',0)):,}"
+            header = f"{getattr(r,'Symbol')} [{getattr(r,'Side')}] — {getattr(r,'Sector','')}"
             with st.expander(header):
                 cA, cB = st.columns([1,1])
                 with cA:
@@ -543,12 +475,11 @@ with right:
                     if st.button(f"➕ Add {getattr(r,'Symbol')} to Today's Queue", key=f"queue_{getattr(r,'Symbol')}"):
                         add_to_queue(getattr(r,'Symbol'), "USA"); st.toast(f"Added {getattr(r,'Symbol')}")
 
-        # CSV + bulk queue + simple selector (kept)
         pick = st.selectbox("Quick Preview / Queue", res["Symbol"].tolist())
         c1, c2, c3 = st.columns([1,1,1])
         with c1:
             st.download_button("⬇️ CSV", res.to_csv(index=False).encode("utf-8"),
-                               file_name=f"usa_scan_{scan_kind.replace(' ','_')}.csv", mime="text/csv")
+                               file_name=f"usa_scan_AB.csv", mime="text/csv")
         with c2:
             if st.button("➕ Add Selected to Today's Queue", use_container_width=True):
                 add_to_queue(pick, "USA"); st.toast(f"Added {pick}")
@@ -557,7 +488,7 @@ with right:
                 for s in res["Symbol"].tolist(): add_to_queue(s, "USA")
                 st.success("Queued all results.")
     else:
-        st.info("No final matches. See the **Top filter reasons** above to adjust thresholds (e.g., earnings window, liquidity floors, momentum/trend gates, options requirements).")
+        st.info("No final matches. See **Top filter reasons** above to adjust thresholds (e.g., earnings window via Smart Money, liquidity floors).")
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Economic Calendar & Earnings
@@ -608,7 +539,7 @@ with col_right:
         st.caption("Set EODHD_API_TOKEN to show earnings here.")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# USA Morning Report & News
+# Morning Report & News
 # ──────────────────────────────────────────────────────────────────────────────
 st.markdown("---")
 st.header("📰 USA Morning Report & News")
