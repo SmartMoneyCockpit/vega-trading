@@ -1,5 +1,6 @@
+
 # US_Stock_Market.py
-# USA Text Dashboard — EODHD-backed Scanner (auto-build universe) + Always-on Earnings + TV Calendar + EODHD News
+# USA Text Dashboard — Start-from-zero Pattern Scanner + EODHD Earnings + TV Calendar + EODHD News
 # Requires: EODHD_API_TOKEN in env or st.secrets
 
 import os, json, requests, pandas as pd, numpy as np, streamlit as st
@@ -8,7 +9,7 @@ from typing import Optional, Dict, List
 import urllib.parse
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Optional project integrations (graceful fallbacks if missing)
+# Optional integrations (graceful fallbacks)
 # ──────────────────────────────────────────────────────────────────────────────
 try:
     from src.components.tradingview_widgets import advanced_chart
@@ -21,8 +22,7 @@ try:
     HAS_SM = True
 except Exception:
     HAS_SM = False
-    def make_light_badge(_: str) -> str:
-        return "USA Dashboard Ready"
+    def make_light_badge(_: str)->str: return "USA Dashboard Ready"
 
 try:
     from src.components.today_queue import add as add_to_queue, render as render_queue
@@ -50,8 +50,7 @@ except Exception:
         else:
             d = {"tickers":[]}
         if not d.get("tickers"):
-            st.caption("No tickers yet. Add from the scanner.")
-            return
+            st.caption("No tickers yet. Add from the scanner."); return
         for rec in d["tickers"]:
             st.write(f"- **{rec.get('symbol','?')}** ({rec.get('region','?')})")
 
@@ -71,7 +70,7 @@ st.success(make_light_badge("USA"))
 # ──────────────────────────────────────────────────────────────────────────────
 # EODHD token & helpers
 # ──────────────────────────────────────────────────────────────────────────────
-def _token() -> Optional[str]:
+def _token()->Optional[str]:
     tok = os.getenv("EODHD_API_TOKEN")
     if tok: return tok
     try: return st.secrets.get("EODHD_API_TOKEN")  # type: ignore[attr-defined]
@@ -91,30 +90,14 @@ def _safe_get(url: str, params: Dict, timeout: int = 25):
     return None
 
 # ──────────────────────────────────────────────────────────────────────────────
-# EODHD APIs: Search, US exchange symbol list, OHLCV, Earnings, News
+# EODHD APIs: US symbol list, OHLCV, Earnings, News
 # ──────────────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=600, show_spinner=False)
 def eod_exchange_symbols_us(token: str) -> pd.DataFrame:
-    """US exchange symbol list (works on most plans)."""
     url = "https://eodhd.com/api/exchange-symbol-list/US"
     params = {"api_token": token, "fmt": "json"}
     data = _safe_get(url, params) or []
-    df = pd.DataFrame(data)
-    return df
-
-@st.cache_data(ttl=300, show_spinner=False)
-def eod_search_us(query: str, token: str) -> pd.DataFrame:
-    if not query.strip(): return pd.DataFrame(columns=["Code","Exchange","Name"])
-    url = f"https://eodhd.com/api/search/{urllib.parse.quote(query.strip())}"
-    params = {"api_token": token, "limit": "50"}
-    data = _safe_get(url, params) or []
-    df = pd.DataFrame(data)
-    if df.empty: return df
-    us_ex = {"NYSE","NASDAQ","AMEX","BATS","ARCX","OTC","NYSE MKT"}
-    if "Exchange" in df.columns:
-        df = df[df["Exchange"].astype(str).str.upper().isin(us_ex)]
-    keep = [c for c in ["Code","Exchange","Name"] if c in df.columns]
-    return df[keep].drop_duplicates().reset_index(drop=True)
+    return pd.DataFrame(data)
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_ohlcv(symbol_eod: str, start: str, end: str, token: str) -> pd.DataFrame:
@@ -132,35 +115,8 @@ def _eod_us(sym: str) -> str:
     sym = sym.strip().upper()
     return sym if "." in sym else f"{sym}.US"
 
-@st.cache_data(ttl=300, show_spinner=False)
-def eod_earnings(from_date: str, to_date: str, token: str) -> pd.DataFrame:
-    base = "https://eodhd.com/api/calendar/earnings"
-    params = {"from": from_date, "to": to_date, "api_token": token, "fmt": "json", "limit": "5000"}
-    data = _safe_get(base, params) or []
-    if not data: return pd.DataFrame()
-    df = pd.DataFrame(data).rename(columns={"code":"symbol","epsEstimate":"epsEstimated"})
-    if "reportDate" in df.columns:
-        df["reportDate"] = pd.to_datetime(df["reportDate"], errors="coerce")
-    keep = [c for c in ["reportDate","time","symbol","exchange","name","epsEstimated","epsActual","revenueEstimated","revenueActual","currency"] if c in df.columns]
-    return df[keep].sort_values(["reportDate","symbol"] if "symbol" in df.columns else ["reportDate"]).reset_index(drop=True)
-
-@st.cache_data(ttl=300, show_spinner=False)
-def eod_news(from_date: str, to_date: str, token: str) -> pd.DataFrame:
-    base = "https://eodhd.com/api/news"
-    params = {"from": from_date, "to": to_date, "api_token": token, "fmt": "json", "limit": "100"}
-    data = _safe_get(base, params) or []
-    df = pd.DataFrame(data)
-    if df.empty: return df
-    for c in ["date","publishedDate","time"]:
-        if c in df.columns:
-            df["ts"] = pd.to_datetime(df[c], errors="coerce")
-            break
-    keep = [c for c in ["ts","title","content","link","symbols","source","author"] if c in df.columns]
-    if not keep: return pd.DataFrame()
-    return df[keep].sort_values("ts", ascending=False).reset_index(drop=True)
-
 # ──────────────────────────────────────────────────────────────────────────────
-# Indicators & pattern logic (EMA/RSI/ATR + Wedges)
+# Indicators & pattern logic
 # ──────────────────────────────────────────────────────────────────────────────
 def ema(series: pd.Series, length: int) -> pd.Series:
     return series.ewm(span=length, adjust=False).mean()
@@ -227,12 +183,7 @@ def tag_short(row: pd.Series) -> bool:
     return bool(row["EMA20"] < row["EMA50"] < row["EMA200"] and row["Close"] < row["EMA20"] and row["RSI14"] <= 50)
 
 def tag_momentum(row: pd.Series) -> bool:
-    return bool(
-        row["EMA20"] > row["EMA50"] > row["EMA200"]
-        and row["RSI14"] >= 60
-        and row["Close"] >= 0.98 * (row["High20"] or row["Close"])
-        and row["Volume"] >= 1.2 * (row["AvgVol20"] or 1)
-    )
+    return bool(row["EMA20"] > row["EMA50"] > row["EMA200"] and row["RSI14"] >= 60 and row["Close"] >= 0.98*(row["High20"] or row["Close"]) and row["Volume"] >= 1.2*(row["AvgVol20"] or 1))
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Scanner & Chart
@@ -241,163 +192,84 @@ st.markdown("### 🔎 Scanner & Chart")
 left, right = st.columns([3, 2], gap="large")
 
 with left:
-    scan_kind = st.radio(
-        "Scan type",
-        ["Rising Wedge", "Falling Wedge", "Long Stock", "Short Stock", "High Momentum Stock"],
-        horizontal=True,
-    )
-
+    scan_kind = st.radio("Scan type", ["Rising Wedge","Falling Wedge","Long Stock","Short Stock","High Momentum Stock"], horizontal=True)
     default_symbol = st.text_input("Symbol (TradingView format)", value="AAPL")
-    st.link_button("🔗 Open in TradingView",
-                   f"https://www.tradingview.com/chart/?symbol={default_symbol}",
-                   use_container_width=True)
+    st.link_button("🔗 Open in TradingView", f"https://www.tradingview.com/chart/?symbol={default_symbol}", use_container_width=True)
     if HAS_TV_WIDGETS:
         advanced_chart(default_symbol, height=720)
     else:
         st.info("`advanced_chart()` not found. Chart embed skipped.")
 
-    # Optional vector metrics (local CSV)
-    csv_path = os.path.join("data/eod/us",
-                            (default_symbol.split(":")[-1] if ":" in default_symbol else default_symbol) + ".csv")
-    if HAS_VECTOR and os.path.exists(csv_path):
-        try:
-            df_csv = pd.read_csv(csv_path)
-            m = compute_from_df(df_csv)
-            c1, c2, c3, c4, c5 = st.columns(5)
-            c1.metric("RT", m["RT"]); c2.metric("RV", m["RV"]); c3.metric("RS", m["RS"]); c4.metric("CI", m["CI"]); c5.metric("VST", m["VST"])
-        except Exception as e:
-            st.caption(f"Vector metrics unavailable (CSV issue): {e}")
-    else:
-        st.caption("Vector metrics appear when a local CSV exists for the selected symbol (data/eod/us/).")
-
 with right:
-    st.subheader("Universe & Scan (Auto from EODHD)")
-
-    if "usa_universe" not in st.session_state:
-        st.session_state["usa_universe"] = []
-
-    # --- Auto-build universe from US symbol list (works without screener) ---
-    top_n        = st.number_input("Top-N liquid to fetch", 50, 1000, 150, 25)
-    min_price    = st.number_input("Min price ($)", 1.0, 100.0, 5.0, 0.5)
-    min_avg_vol  = st.number_input("Min AvgVol20 (shares)", 0, 10_000_000, 500_000, 50_000)
+    st.subheader("Start from Zero — Find Matches")
     lookback     = st.number_input("Lookback bars", 150, 3000, 420, 10)
     apply_sm     = st.checkbox("Apply Smart Money pre-filter (if available)", value=True)
+    max_checks   = st.number_input("Max symbols to check (budget)", 50, 5000, 800, 50)
+    max_results  = st.number_input("Max matches to return", 5, 1000, 150, 5)
+    start_offset = st.number_input("Start offset in symbol list", 0, 50000, 0, 100)
 
-    if st.button("🧲 Auto-build Universe (US, Top-N Liquid)", use_container_width=True):
+    if "us_symbol_pool" not in st.session_state:
+        st.session_state["us_symbol_pool"] = []
+
+    if st.button("📥 Load US symbol list", use_container_width=True):
         if not TOKEN:
             st.error("EODHD token missing — set EODHD_API_TOKEN.")
         else:
-            us = eod_exchange_symbols_us(TOKEN)
-            if us.empty:
-                st.warning("Could not retrieve US symbol list (endpoint blocked or network issue).")
+            df_all = eod_exchange_symbols_us(TOKEN)
+            if df_all.empty:
+                st.warning("Could not retrieve US symbol list.")
             else:
-                # Keep common stocks on NYSE/NASDAQ/AMEX; drop ETFs/ETNs/Pref/ADR where possible
-                ex_ok = {"NYSE","NASDAQ","AMEX","NYSE MKT","BATS","ARCX"}
-                if "Exchange" in us.columns:
-                    us = us[us["Exchange"].astype(str).str.upper().isin(ex_ok)]
-                if "Type" in us.columns:
-                    us = us[~us["Type"].astype(str).str.contains("ETF|ETN|FUND|PREF|ADR|RIGHT|WARRANT", case=True, na=False)]
-                if "IsEtf" in us.columns:
-                    us = us[~us["IsEtf"].astype(str).str.lower().eq("true")]
+                ex_ok = {"NYSE","NASDAQ","AMEX","NYSE MKT","BATS","ARCX","OTC"}
+                if "Exchange" in df_all.columns:
+                    df_all = df_all[df_all["Exchange"].astype(str).str.upper().isin(ex_ok)]
+                if "Code" in df_all.columns:
+                    pool = df_all["Code"].astype(str).str.upper().dropna().drop_duplicates().tolist()
+                else:
+                    pool = []
+                st.session_state["us_symbol_pool"] = pool
+                st.success(f"Loaded {len(pool)} US symbols.")
 
-                pool = us["Code"].astype(str).str.upper().dropna().drop_duplicates().tolist()[:1000]
+    pool = st.session_state.get("us_symbol_pool", [])
 
-                prog = st.progress(0.0, text="Building liquid universe…")
-                chosen: List[str] = []
-                start = (date.today() - timedelta(days=365)).strftime("%Y-%m-%d")
-                end   = date.today().strftime("%Y-%m-%d")
-                total = max(1, len(pool))
-                for i, sym in enumerate(pool, start=1):
-                    df = fetch_ohlcv(_eod_us(sym), start, end, TOKEN)
-                    if df.empty or len(df) < 40:
-                        prog.progress(min(1.0, i/total))
-                        continue
-                    df = df.tail(60).copy()
-                    df["AvgVol20"] = df["Volume"].rolling(20).mean()
-                    last = df.iloc[-1]
-                    if (float(last["Close"]) >= float(min_price)) and (float(last["AvgVol20"]) >= float(min_avg_vol)):
-                        chosen.append(sym)
-                    prog.progress(min(1.0, i/total))
-                    if len(chosen) >= int(top_n):
-                        break
-
-                st.session_state["usa_universe"] = sorted(set(chosen))
-                st.success(f"Universe built: {len(chosen)} symbols.")
-
-    # --- EODHD search helper (ticker/company) ---
-    search_q = st.text_input("Search EODHD (ticker or company)")
-    s1, s2 = st.columns([1,1])
-    if s1.button("Search"):
-        if not TOKEN: st.error("EODHD token missing.")
-        else:
-            st.session_state["last_search_df"] = eod_search_us(search_q, TOKEN)
-    df_s = st.session_state.get("last_search_df", pd.DataFrame())
-    if not df_s.empty:
-        st.caption("Search results (US):")
-        picks = st.multiselect(
-            "Select symbols to add",
-            options=[f"{r.Code} — {r.Name} ({r.Exchange})" for r in df_s.itertuples()],
-            default=[],
-        )
-        if s2.button("➕ Add selected"):
-            for p in picks:
-                sym = p.split(" — ")[0].strip().upper()
-                if sym not in st.session_state["usa_universe"]:
-                    st.session_state["usa_universe"].append(sym)
-            st.success("Added to universe.")
-
-    # --- Manual paste add/replace ---
-    universe = sorted(set(st.session_state["usa_universe"]))
-    st.caption(f"Universe size: **{len(universe)}**")
-    if universe: st.code(", ".join(universe), language="text")
-
-    manual = st.text_area("Add/replace symbols (comma/newline)", "", height=80)
-    a, b = st.columns(2)
-    if a.button("➕ Add pasted", use_container_width=True) and manual.strip():
-        raw = [x.strip().upper() for x in manual.replace("\n", ",").split(",") if x.strip()]
-        st.session_state["usa_universe"] = sorted(set(universe + raw))
-        st.success(f"Added {len(raw)} symbols.")
-    if b.button("♻️ Replace with pasted", use_container_width=True) and manual.strip():
-        raw = [x.strip().upper() for x in manual.replace("\n", ",").split(",") if x.strip()]
-        st.session_state["usa_universe"] = sorted(set(raw))
-        st.success("Universe replaced.")
-
-    # --- Scanner over the current universe ---
     if "us_scan_df" not in st.session_state:
         st.session_state["us_scan_df"] = pd.DataFrame()
 
     @st.cache_data(ttl=300, show_spinner=False)
-    def run_scan(symbols: List[str], kind: str, lookback: int, token: str, apply_sm_flag: bool) -> pd.DataFrame:
+    def _find_matches(kind: str, lookback: int, token: str, pool: List[str], start_offset: int, max_checks: int, max_results: int, apply_sm_flag: bool) -> pd.DataFrame:
+        from datetime import date, timedelta
         start = (date.today() - timedelta(days=int(max(lookback * 1.2, 200)))).strftime("%Y-%m-%d")
         end   = date.today().strftime("%Y-%m-%d")
         out = []
-        for sym in symbols:
+        checked = 0
+        for sym in pool[start_offset: start_offset + max_checks]:
             df = fetch_ohlcv(_eod_us(sym), start, end, token)
             if df.empty or len(df) < 120:
+                checked += 1
                 continue
             df = df.tail(max(lookback, 120))
             df = compute_indicators(df)
             row = df.iloc[-1]
 
-            if kind in ("Rising Wedge", "Falling Wedge"):
+            if kind in ("Rising Wedge","Falling Wedge"):
                 sub = df.tail(min(120, len(df)))
-                ok, score = (is_rising_wedge(sub) if kind == "Rising Wedge" else is_falling_wedge(sub))
+                ok, score = (is_rising_wedge(sub) if kind=="Rising Wedge" else is_falling_wedge(sub))
             elif kind == "Long Stock":
                 ok, score = tag_long(row), float(row.get("RSI14", 0))
             elif kind == "Short Stock":
                 ok, score = tag_short(row), float(100 - row.get("RSI14", 0))
             else:
                 ok, score = tag_momentum(row), float(row.get("RSI14", 0))
+
             if not ok:
+                checked += 1
                 continue
 
             sm_ok = True
             if apply_sm_flag and HAS_SM:
-                try:
-                    sm_ok = bool(sm_passes(df))
-                except Exception:
-                    sm_ok = True
+                try: sm_ok = bool(sm_passes(df))
+                except Exception: sm_ok = True
             if not sm_ok:
+                checked += 1
                 continue
 
             out.append({
@@ -415,30 +287,26 @@ with right:
                 "High20": round(float(row["High20"]), 4),
                 "Low20": round(float(row["Low20"]), 4),
             })
+            if len(out) >= max_results:
+                break
+            checked += 1
         return pd.DataFrame(out)
 
-    r1, r2 = st.columns([2,1])
-    if r1.button("🚀 Run Scanner", use_container_width=True):
+    if st.button("🚀 Find Matches (Start from Zero)", use_container_width=True):
         if not TOKEN:
             st.error("EODHD token missing — set EODHD_API_TOKEN.")
-        elif not st.session_state["usa_universe"]:
-            st.warning("Universe is empty. Click **Auto-build Universe**, search, or paste symbols, then run again.")
+        elif not pool:
+            st.warning("Load the US symbol list first (click 'Load US symbol list').")
         else:
-            with st.spinner("Scanning USA symbols…"):
-                res = run_scan(st.session_state["usa_universe"], scan_kind, lookback, TOKEN, apply_sm)
+            with st.spinner("Scanning for pattern matches…"):
+                res = _find_matches(scan_kind, lookback, TOKEN, pool, int(start_offset), int(max_checks), int(max_results), apply_sm)
             st.session_state["us_scan_df"] = res
-            st.success("Scanner finished.")
+            st.success(f"Done. Matches: {len(res)}")
 
-    if r2.button("🗑️ Clear Results", use_container_width=True):
-        st.session_state["us_scan_df"] = pd.DataFrame()
-
-    res = st.session_state["us_scan_df"]
+    res = st.session_state.get("us_scan_df", pd.DataFrame())
     if not res.empty:
-        res = res.sort_values(["Score", "RSI14"], ascending=[False, False]).reset_index(drop=True)
-        st.dataframe(
-            res[["Symbol","Tag","Score","Close","EMA20","EMA50","EMA200","RSI14","ATR14","Vol","AvgVol20","High20","Low20"]],
-            use_container_width=True, hide_index=True
-        )
+        res = res.sort_values(["Score","RSI14"], ascending=[False, False]).reset_index(drop=True)
+        st.dataframe(res, use_container_width=True, hide_index=True)
         pick = st.selectbox("Preview / Queue", res["Symbol"].tolist())
         c1, c2, c3 = st.columns([1,1,1])
         with c1:
@@ -479,47 +347,26 @@ with right:
         </div>
         """, height=560, scrolling=False)
     else:
-        st.info("Click **Auto-build Universe** (or search/paste), then **Run Scanner**.")
+        st.info("Click **Load US symbol list** → **Find Matches** to start from zero.")
 
 st.markdown("---")
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Economic Calendar + Earnings (EODHD table is always on)
-# ──────────────────────────────────────────────────────────────────────────────
+# Economic Calendar & Earnings
 st.header("🗓️ Economic Calendar & 💼 Earnings (Split View)")
-
-st.markdown("""
-<style>
-.inline-black-divider{width:100%;height:600px;min-height:600px;background:#000;border-radius:8px;}
-.section-card{padding:.6rem .8rem;border:1px solid rgba(255,255,255,.08);border-radius:12px;background:rgba(255,255,255,.02);}
-</style>
-""", unsafe_allow_html=True)
-
+st.markdown("<style>.inline-black-divider{width:100%;height:600px;min-height:600px;background:#000;border-radius:8px;}</style>", unsafe_allow_html=True)
 col_left, col_mid, col_right = st.columns([0.475, 0.05, 0.475], gap="small")
 import streamlit.components.v1 as components
-
 with col_left:
     st.subheader("📆 Economic Calendar (TradingView • USA/CAD/MXN)")
     components.html("""
     <div class="tradingview-widget-container">
       <div class="tradingview-widget-container__widget"></div>
       <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-events.js" async>
-      {
-        "colorTheme": "dark",
-        "isTransparent": true,
-        "width": "100%",
-        "height": "600",
-        "locale": "en",
-        "importanceFilter": "-1,0,1",
-        "currencyFilter": "USD,CAD,MXN"
-      }
+      {"colorTheme":"dark","isTransparent":true,"width":"100%","height":"600","locale":"en","importanceFilter":"-1,0,1","currencyFilter":"USD,CAD,MXN"}
       </script>
-    </div>
-    """, height=620, scrolling=False)
-
+    </div>""", height=620, scrolling=False)
 with col_mid:
     st.markdown('<div class="inline-black-divider"></div>', unsafe_allow_html=True)
-
 with col_right:
     st.subheader("💼 Earnings (EODHD • Always On)")
     today = date.today()
@@ -527,47 +374,51 @@ with col_right:
     with d1: earn_start = st.date_input("From", value=today - timedelta(days=1), key="earn_from")
     with d2: earn_end   = st.date_input("To",   value=today + timedelta(days=14), key="earn_to")
     if TOKEN:
+        from_date = earn_start.strftime("%Y-%m-%d"); to_date = earn_end.strftime("%Y-%m-%d")
         with st.spinner("Loading earnings…"):
-            df_e = eod_earnings(earn_start.strftime("%Y-%m-%d"), earn_end.strftime("%Y-%m-%d"), TOKEN)
+            raw = _safe_get("https://eodhd.com/api/calendar/earnings", {"from": from_date,"to": to_date,"api_token": TOKEN,"fmt":"json","limit":"5000"}) or []
+            df_e = pd.DataFrame(raw)
         if not df_e.empty:
+            if "code" in df_e.columns and "symbol" not in df_e.columns:
+                df_e = df_e.rename(columns={"code":"symbol"})
+            if "epsEstimate" in df_e.columns and "epsEstimated" not in df_e.columns:
+                df_e = df_e.rename(columns={"epsEstimate":"epsEstimated"})
+            if "reportDate" in df_e.columns:
+                df_e["reportDate"] = pd.to_datetime(df_e["reportDate"], errors="coerce")
             if "exchange" in df_e.columns:
                 df_e = df_e[df_e["exchange"].astype(str).str.contains("US|NYSE|NASDAQ|AMEX|BATS|ARCX|OTC", case=False, na=True)]
-            st.dataframe(df_e, use_container_width=True, hide_index=True)
-            st.download_button("⬇️ Download Earnings (CSV)",
-                               df_e.to_csv(index=False).encode("utf-8"),
-                               file_name=f"earnings_{earn_start}_{earn_end}.csv",
-                               mime="text/csv")
+            keep = [c for c in ["reportDate","time","symbol","exchange","name","epsEstimated","epsActual","revenueEstimated","revenueActual","currency"] if c in df_e.columns]
+            if keep: df_e = df_e[keep]
+            st.dataframe(df_e.sort_values(["reportDate","symbol"] if "symbol" in df_e.columns else ["reportDate"]), use_container_width=True, hide_index=True)
+            st.download_button("⬇️ Download Earnings (CSV)", df_e.to_csv(index=False).encode("utf-8"), file_name=f"earnings_{from_date}_{to_date}.csv", mime="text/csv")
         else:
             st.info("No earnings returned for this window or API rate-limited.")
     else:
         st.caption("Set EODHD_API_TOKEN to show earnings here.")
 
 st.markdown("---")
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Morning Report & News (EODHD News feed)
-# ──────────────────────────────────────────────────────────────────────────────
 st.header("📰 USA Morning Report & News")
 c1, c2 = st.columns(2)
-
 with c1:
     st.subheader("🇺🇸 Morning Report (Latest)")
     report_path = "reports/usa_morning.md"
     if os.path.exists(report_path):
-        with open(report_path, "r", encoding="utf-8") as f:
-            st.markdown(f.read())
+        with open(report_path, "r", encoding="utf-8") as f: st.markdown(f.read())
     else:
         st.caption("No `reports/usa_morning.md` yet. Using EODHD News on the right.")
-
 with c2:
     st.subheader("Market News (EODHD)")
     if TOKEN:
-        to_dt = date.today()
-        from_dt = to_dt - timedelta(days=3)
+        to_dt = date.today(); from_dt = to_dt - timedelta(days=3)
         with st.spinner("Fetching EODHD News…"):
-            news_df = eod_news(from_dt.strftime("%Y-%m-%d"), to_dt.strftime("%Y-%m-%d"), TOKEN)
-        if not news_df.empty:
-            for r in news_df.head(12).itertuples():
+            raw_news = _safe_get("https://eodhd.com/api/news", {"from": from_dt.strftime("%Y-%m-%d"), "to": to_dt.strftime("%Y-%m-%d"), "api_token": TOKEN, "fmt":"json", "limit":"100"}) or []
+            df_news = pd.DataFrame(raw_news)
+        if not df_news.empty:
+            ts_col = None
+            for c in ["date","publishedDate","time"]:
+                if c in df_news.columns: ts_col = c; break
+            if ts_col: df_news["ts"] = pd.to_datetime(df_news[ts_col], errors="coerce")
+            for r in df_news.sort_values("ts", ascending=False).head(12).itertuples():
                 with st.container(border=True):
                     st.markdown(f"**{getattr(r,'title','(no title)')}**")
                     meta = " • ".join([x for x in [getattr(r,'source',None), getattr(r,'ts',None)] if x])
@@ -580,8 +431,4 @@ with c2:
         st.caption("Set EODHD_API_TOKEN to enable EODHD news.")
 
 st.markdown("---")
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Today's Trades Queue
-# ──────────────────────────────────────────────────────────────────────────────
 render_queue()
