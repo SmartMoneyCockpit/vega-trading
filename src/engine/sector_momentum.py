@@ -1,6 +1,7 @@
 
 import numpy as np
 import pandas as pd
+import os
 
 def _to_returns(df: pd.DataFrame, price_col="close"):
     s = pd.to_numeric(df[price_col], errors="coerce").ffill()
@@ -16,9 +17,7 @@ def _rs(asset: pd.Series, bench: pd.Series):
     if df.shape[0] < 2: return np.nan
     a = df.iloc[:,0]
     b = df.iloc[:,1]
-    # relative performance ratio over window
     ratio = (1 + a).cumprod() / (1 + b).cumprod()
-    # momentum = last/median - 1
     return float(ratio.iloc[-1] / ratio.median() - 1.0)
 
 def _horizon_ret(series: pd.Series, periods: int):
@@ -26,21 +25,15 @@ def _horizon_ret(series: pd.Series, periods: int):
     return float(series.iloc[-1] / series.iloc[-periods] - 1.0)
 
 def compute_momentum(asset_df: pd.DataFrame, bench_df: pd.DataFrame, price_col="close"):
-    # returns (daily-ish), equity, horizons, RS
     r_a = _to_returns(asset_df, price_col)
     r_b = _to_returns(bench_df, price_col) if bench_df is not None else None
     eq_a = (1 + r_a).cumprod()
-    eq_b = (1 + r_b).cumprod() if r_b is not None else None
 
-    # Horizons in trading days (approx)
     horizons = {"1w":5, "1m":21, "3m":63, "6m":126}
-    hvals = {}
-    for k, p in horizons.items():
-        hvals[k] = _horizon_ret(eq_a, p)
+    hvals = {k: _horizon_ret(eq_a, p) for k,p in horizons.items()}
 
     rs_val = _rs(r_a, r_b) if r_b is not None else np.nan
 
-    # Composite momentum: weighted (1w=0.2, 1m=0.3, 3m=0.3, 6m=0.2) plus RS boost
     w = {"1w":0.2,"1m":0.3,"3m":0.3,"6m":0.2}
     base = sum([(hvals[k] if np.isfinite(hvals[k]) else 0)*w[k] for k in w])
     boost = (rs_val if np.isfinite(rs_val) else 0) * 0.25
@@ -60,7 +53,6 @@ def tiles_from_files(files: list, bench_df: pd.DataFrame = None, price_col="clos
     for f in files:
         try:
             df = pd.read_csv(f)
-            # date flex
             if "date" in df.columns:
                 df["date"] = pd.to_datetime(df["date"], errors="coerce")
                 df = df.sort_values("date").set_index("date")
