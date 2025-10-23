@@ -42,14 +42,20 @@ with st.expander("Weights (0..1, auto-normalized)", expanded=False):
         st.warning("All weights are zero. Using defaults.")
         weights = w_defaults
 
+with st.expander("Rolling Metrics", expanded=False):
+    c5, c6 = st.columns(2)
+    with c5:
+        roll_window = st.number_input("Rolling window (trading days)", value=63, min_value=10, max_value=252, step=1)
+    with c6:
+        show_rolling = st.checkbox("Show rolling Sharpe & Volatility charts", value=True)
+
+@st.cache_data(show_spinner=False)
 def _load_csv(uploaded):
     df = pd.read_csv(uploaded)
-    # Flexible parsing
     if "date" in df.columns:
         df["date"] = pd.to_datetime(df["date"], errors="coerce")
         df = df.sort_values("date").set_index("date")
     else:
-        # try first column
         df.iloc[:,0] = pd.to_datetime(df.iloc[:,0], errors="coerce")
         df = df.rename(columns={df.columns[0]:"date"}).sort_values("date").set_index("date")
     return df
@@ -86,9 +92,28 @@ if go:
             r = asset[price_col].pct_change().dropna()
             eq = (1 + r).cumprod()
             st.line_chart(eq.rename("Equity Curve"))
-            st.line_chart(r.rename("Daily Returns"))
+            st.line_chart(r.rename("Periodic Returns"))
 
-            st.success("Done. Adjust weights above to recompute the composite score.")
+            if show_rolling:
+                rm = rs.rolling_metrics(r, window=int(roll_window))
+                st.line_chart(rm["roll_sharpe"].rename("Rolling Sharpe"))
+                st.line_chart(rm["roll_vol"].rename("Rolling Volatility (ann.)"))
+
+            # --- Exports ---
+            st.subheader("Export")
+            # Metrics JSON
+            jbuf = io.StringIO()
+            json.dump(metrics, jbuf, indent=2, default=lambda x: None)
+            st.download_button("Download metrics (JSON)", data=jbuf.getvalue(), file_name="risk_metrics.json", mime="application/json")
+
+            # Summary CSV with a single row
+            sym_guess = "ASSET"
+            row_df = rs.metrics_to_row(sym_guess, metrics)
+            csv_buf = io.StringIO()
+            row_df.to_csv(csv_buf, index=False)
+            st.download_button("Download summary (CSV)", data=csv_buf.getvalue(), file_name="risk_metrics_summary.csv", mime="text/csv")
+
+            st.success("Done. Adjust weights/rolling window and recompute anytime.")
         except Exception as e:
             st.exception(e)
 else:
