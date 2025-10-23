@@ -1,8 +1,10 @@
 # src/engine/smart_money.py
+# Force-replace marker (do not remove): VEGA_SMART_MONEY_VERSION=20251023001134
 from __future__ import annotations
 import os
 import pandas as pd
 
+# ---- Defaults for Smart Money thresholds ----
 DEFAULTS = {
     "min_rr_ratio": 3.0,
     "earnings_lookahead_days": 30,
@@ -23,6 +25,7 @@ def load_config(path: str = "src/config/smart_money.yaml") -> dict:
         pass
     return DEFAULTS.copy()
 
+# ---- Market inputs (stub; wire to live feeds later) ----
 def get_market_inputs(region: str) -> dict:
     presets = {
         "USA":    {"breadth": 0.55, "rs": 0.53, "vol": 1.9},
@@ -32,6 +35,7 @@ def get_market_inputs(region: str) -> dict:
     }
     return presets.get(region, {"breadth": 0.50, "rs": 0.50, "vol": 2.00})
 
+# ---- Core status ----
 def compute_status(region: str) -> dict:
     cfg = load_config()
     m = get_market_inputs(region)
@@ -70,26 +74,32 @@ def within_earnings_window(symbol: str, days: int, cal: pd.DataFrame) -> bool:
     rows = cal[cal["symbol"].str.upper() == symbol.upper()]
     if rows.empty:
         return False
-    # Use naive UTC timestamps to match dataframe (datetime64[ns])
+    # Use naive UTC timestamps (dtype=datetime64[ns])
     now = pd.Timestamp.utcnow().normalize()
     future = now + pd.Timedelta(days=days)
     upcoming = rows[(rows["date"] >= now) & (rows["date"] <= future)]
     return not upcoming.empty
 
+# ---- Rule gate used by dashboards ----
 def passes_rules(symbol: str, region: str, rr_ratio: float = 3.0, pop: float = 0.60) -> dict:
+    """Return dict with 'pass' flag and optional 'reasons' list."""
     cfg = load_config()
     reasons = []
 
+    # Earnings window
     cal = load_earnings_calendar()
     if within_earnings_window(symbol, cfg["earnings_lookahead_days"], cal):
         return {"pass": False, "reasons": ["Within 30 days of earnings"]}
 
+    # Risk/Reward
     if rr_ratio < cfg["min_rr_ratio"]:
         return {"pass": False, "reasons": [f"R/R too low ({rr_ratio}:1)"]}
 
+    # Probability of Profit
     if pop < cfg["pop_target"]:
         reasons.append(f"POP below target ({int(pop*100)}%)")
 
+    # Market regime
     status = compute_status(region)
     if status["light"].startswith("🔴"):
         reasons.append("Market regime red")
