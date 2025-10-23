@@ -1,10 +1,11 @@
 # src/engine/smart_money.py
-# Force-replace marker (do not remove): VEGA_SMART_MONEY_VERSION=20251023001134
 from __future__ import annotations
 import os
 import pandas as pd
+from pathlib import Path
 
-# ---- Defaults for Smart Money thresholds ----
+DEBUG = os.getenv("VEGA_DEBUG", "0") == "1"
+
 DEFAULTS = {
     "min_rr_ratio": 3.0,
     "earnings_lookahead_days": 30,
@@ -25,7 +26,6 @@ def load_config(path: str = "src/config/smart_money.yaml") -> dict:
         pass
     return DEFAULTS.copy()
 
-# ---- Market inputs (stub; wire to live feeds later) ----
 def get_market_inputs(region: str) -> dict:
     presets = {
         "USA":    {"breadth": 0.55, "rs": 0.53, "vol": 1.9},
@@ -35,7 +35,6 @@ def get_market_inputs(region: str) -> dict:
     }
     return presets.get(region, {"breadth": 0.50, "rs": 0.50, "vol": 2.00})
 
-# ---- Core status ----
 def compute_status(region: str) -> dict:
     cfg = load_config()
     m = get_market_inputs(region)
@@ -58,7 +57,7 @@ def load_earnings_calendar(path: str = "data/earnings/calendar.csv") -> pd.DataF
             df = pd.read_csv(path)
             if "symbol" in df.columns and "date" in df.columns:
                 df["date"] = pd.to_datetime(df["date"], errors="coerce")
-                # Ensure timezone-naive to avoid 'datetime64[ns] vs Timestamp' errors
+                # Ensure timezone-naive
                 try:
                     df["date"] = df["date"].dt.tz_localize(None)
                 except Exception:
@@ -68,38 +67,59 @@ def load_earnings_calendar(path: str = "data/earnings/calendar.csv") -> pd.DataF
             pass
     return pd.DataFrame(columns=["symbol", "date"])
 
+def _debug_write(symbol: str, cal: pd.DataFrame, now: pd.Timestamp, future: pd.Timestamp, subset: pd.DataFrame, note: str = ""):
+    try:
+        root = Path("data/vega/debug"); root.mkdir(parents=True, exist_ok=True)
+        p = root / f"earnings_debug_{symbol}.txt"
+        lines = []
+        lines.append(f"NOTE: {note}")
+        lines.append(f"now={now!r} (tzinfo={getattr(now, 'tzinfo', None)})  dtype={type(now)}")
+        lines.append(f"future={future!r}")
+        lines.append(f"cal.dtypes=\n{cal.dtypes}")
+        lines.append(f"cal.head(5)=\n{cal.head(5)}")
+        lines.append(f"subset({symbol}).dtypes=\n{subset.dtypes}")
+        lines.append(f"subset.head(5)=\n{subset.head(5)}")
+        p.write_text("\n\n".join(lines), encoding="utf-8")
+        print(f"[VEGA DEBUG] wrote {p}")
+    except Exception as e:
+        print(f"[VEGA DEBUG] failed to write diagnostics: {e}")
+
 def within_earnings_window(symbol: str, days: int, cal: pd.DataFrame) -> bool:
     if cal.empty:
         return False
     rows = cal[cal["symbol"].str.upper() == symbol.upper()]
     if rows.empty:
         return False
-    # Use naive UTC timestamps (dtype=datetime64[ns])
-    now = pd.Timestamp.utcnow().normalize()
+    now = pd.Timestamp.utcnow().normalize()  # naive UTC
     future = now + pd.Timedelta(days=days)
-    upcoming = rows[(rows["date"] >= now) & (rows["date"] <= future)]
-    return not upcoming.empty
+    try:
+        mask = (rows["date"] >= now) & (rows["date"] <= future)
+    except Exception as e:
+        if DEBUG:
+            _debug_write(symbol, cal, now, future, rows, note=f"comparison error: {e}")
+        raise
+    if DEBUG:
+        _debug_write(symbol, cal, now, future, rows.loc[mask], note="ok")
+    return bool(mask.any())
 
-# ---- Rule gate used by dashboards ----
 def passes_rules(symbol: str, region: str, rr_ratio: float = 3.0, pop: float = 0.60) -> dict:
-    """Return dict with 'pass' flag and optional 'reasons' list."""
     cfg = load_config()
     reasons = []
 
-    # Earnings window
     cal = load_earnings_calendar()
-    if within_earnings_window(symbol, cfg["earnings_lookahead_days"], cal):
-        return {"pass": False, "reasons": ["Within 30 days of earnings"]}
+    try:
+        if within_earnings_window(symbol, cfg["earnings_lookahead_days"], cal):
+            return {"pass": False, "reasons": ["Within 30 days of earnings"]}
+    except Exception as e:
+        # bubble up a short message so UI shows reason
+        return {"pass": False, "reasons": [f"earnings-window error: {e}"]}
 
-    # Risk/Reward
     if rr_ratio < cfg["min_rr_ratio"]:
         return {"pass": False, "reasons": [f"R/R too low ({rr_ratio}:1)"]}
 
-    # Probability of Profit
     if pop < cfg["pop_target"]:
         reasons.append(f"POP below target ({int(pop*100)}%)")
 
-    # Market regime
     status = compute_status(region)
     if status["light"].startswith("🔴"):
         reasons.append("Market regime red")
