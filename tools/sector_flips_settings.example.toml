@@ -1,0 +1,10 @@
+
+# Default thresholds for flip detection
+[relative_flip]
+window_min = 15
+threshold = 0.006    # 0.6%
+
+[ema_volume]
+fast = 10
+slow = 30
+vol_mult = 1.2
