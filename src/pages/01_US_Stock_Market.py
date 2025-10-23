@@ -255,6 +255,42 @@ def decide_buy_today(row: pd.Series, kind: str, rt: float, vst: float) -> Tuple[
     return ("Wait", entry, stop)
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Smart Money tracer (why things get filtered)
+# ──────────────────────────────────────────────────────────────────────────────
+from collections import Counter
+
+def _sm_eval(symbol: str, price=None, ctx=None):
+    """
+    Returns (ok, reasons:list[str]).
+    Uses return_details=True if available; otherwise falls back to boolean-only.
+    """
+    if not HAS_SM:
+        return False, ["smart_money_not_loaded"]
+    # Try detailed signature first
+    try:
+        ok, details = sm_passes(symbol=symbol, price=price, context=ctx, return_details=True)
+        reasons = details.get("fail_reasons", []) if not ok else []
+        return ok, reasons
+    except TypeError:
+        # Fallback to boolean-only signature
+        try:
+            ok = sm_passes(symbol)
+            return (ok, [] if ok else ["failed_unknown"])
+        except Exception as e:
+            return False, [f"error:{type(e).__name__}"]
+
+def _render_sm_summary(total_checked: int, reasons_counter: Counter, fail_examples_df: pd.DataFrame):
+    passed = total_checked - sum(reasons_counter.values())  # rough (when recording only fails once)
+    st.markdown(f"**Smart Money filter summary:** checked `{total_checked}` symbols")
+    if reasons_counter:
+        st.markdown("**Top filter reasons**")
+        for r, n in reasons_counter.most_common(12):
+            st.write(f"- {r} → {n}")
+    if isinstance(fail_examples_df, pd.DataFrame) and not fail_examples_df.empty:
+        st.markdown("**Examples (failed):**")
+        st.dataframe(fail_examples_df.head(25), use_container_width=True, height=360)
+
+# ──────────────────────────────────────────────────────────────────────────────
 # UI — Scanner & Chart
 # ──────────────────────────────────────────────────────────────────────────────
 st.markdown("### 🔎 Scanner & Chart")
@@ -270,6 +306,7 @@ with left:
     st.session_state["preview_symbol"] = default_symbol
     st.link_button("🔗 Open in TradingView", f"https://www.tradingview.com/chart/?symbol={default_symbol}", use_container_width=True)
     if HAS_TV_WIDGETS:
+        # use your preferred theme inside your advanced_chart implementation
         advanced_chart(st.session_state["preview_symbol"], height=720)
     else:
         st.info("`advanced_chart()` not found. Chart embed skipped.")
@@ -306,6 +343,10 @@ with right:
 
     if "us_scan_df" not in st.session_state:
         st.session_state["us_scan_df"] = pd.DataFrame()
+    if "us_sm_counts" not in st.session_state:
+        st.session_state["us_sm_counts"] = Counter()
+    if "us_sm_fail_examples" not in st.session_state:
+        st.session_state["us_sm_fail_examples"] = pd.DataFrame()
 
     # -------- hard floors --------
     MIN_ABS_VOLUME = 100_000
@@ -314,18 +355,26 @@ with right:
     @st.cache_data(ttl=300, show_spinner=False)
     def _find_matches(kind: str, lookback: int, token: str, pool: List[str],
                       start_offset: int, max_checks: int, max_results: int,
-                      apply_sm_flag: bool) -> pd.DataFrame:
+                      apply_sm_flag: bool):
         start = (date.today() - timedelta(days=int(max(lookback * 1.2, 200)))).strftime("%Y-%m-%d")
         end   = date.today().strftime("%Y-%m-%d")
         out = []
         processed = 0
+
+        reasons_counter = Counter()
+        fail_rows: List[Dict] = []
+
         for sym in pool[start_offset:]:
             if processed >= int(max_checks):
                 break
             df = fetch_ohlcv(_eod_us(sym), start, end, token)
             processed += 1
             if df.empty or len(df) < 120:
+                # record as data_insufficient to explain drop-offs
+                reasons_counter["data_insufficient"] += 1
+                fail_rows.append({"Symbol": sym, "Reason": "data_insufficient"})
                 continue
+
             df = df.tail(max(lookback, 120))
             df = compute_indicators(df)
             row = df.iloc[-1]
@@ -335,27 +384,47 @@ with right:
             vol_today = float(row.get("Volume") or 0.0)
             rvol = (vol_today / avg30) if avg30 > 0 else np.nan
             if (vol_today < MIN_ABS_VOLUME) or (np.isnan(rvol) or rvol < MIN_RVOL):
+                reasons_counter["liquidity_rvol_floor"] += 1
+                fail_rows.append({"Symbol": sym, "Reason": "liquidity_rvol_floor"})
                 continue
 
             # --- Pattern selection ---
             if kind in ("Rising Wedge","Falling Wedge"):
                 sub = df.tail(min(120, len(df)))
                 ok, score = (is_rising_wedge(sub) if kind=="Rising Wedge" else is_falling_wedge(sub))
+                if not ok:
+                    reasons_counter["pattern_miss"] += 1
+                    fail_rows.append({"Symbol": sym, "Reason": "pattern_miss"})
+                    continue
             elif kind == "Long Stock":
-                ok, score = tag_long(row), float(row.get("RSI14", 0))
+                if not tag_long(row):
+                    reasons_counter["trend_long_fail"] += 1
+                    fail_rows.append({"Symbol": sym, "Reason": "trend_long_fail"})
+                    continue
             elif kind == "Short Stock":
-                ok, score = tag_short(row), float(100 - row.get("RSI14", 0))
+                if not tag_short(row):
+                    reasons_counter["trend_short_fail"] += 1
+                    fail_rows.append({"Symbol": sym, "Reason": "trend_short_fail"})
+                    continue
             else:
-                ok, score = tag_momentum(row), float(row["RSI14"])
-            if not ok:
-                continue
+                if not tag_momentum(row):
+                    reasons_counter["momentum_fail"] += 1
+                    fail_rows.append({"Symbol": sym, "Reason": "momentum_fail"})
+                    continue
 
             # --- Smart-Money prefilter (optional) ---
             sm_ok = True
+            sm_reasons: List[str] = []
             if apply_sm_flag and HAS_SM:
-                try: sm_ok = bool(sm_passes(df))
-                except Exception: sm_ok = True
+                ok, r = _sm_eval(sym, price=float(row["Close"]), ctx={"benchmark":"SPY"})
+                sm_ok = bool(ok)
+                sm_reasons = r
             if not sm_ok:
+                if not sm_reasons:
+                    sm_reasons = ["smart_money_fail"]
+                for rr in sm_reasons:
+                    reasons_counter[rr] += 1
+                fail_rows.append({"Symbol": sym, "Reason": ", ".join(sm_reasons)[:240]})
                 continue
 
             # --- Scores ---
@@ -377,6 +446,8 @@ with right:
 
             label, entry, stop = decide_buy_today(row, kind, rt, vst)
             if label == "Wait":
+                reasons_counter["buy_logic_wait"] += 1
+                fail_rows.append({"Symbol": sym, "Reason": "buy_logic_wait"})
                 continue
 
             pct_prc = (row["Close"] / df["Close"].iloc[-2] - 1.0)*100.0 if len(df) >= 2 else 0.0
@@ -407,12 +478,16 @@ with right:
                 break
 
         df_out = pd.DataFrame(out)
+        fail_df = pd.DataFrame(fail_rows)
+        total_checked = processed
+
+        # Sort results (if any)
         if not df_out.empty:
-            # sort by strongest RVOL then VST, then symbol
             by = [c for c in ["RVOL","VST","Symbol"] if c in df_out.columns]
             asc = [False, False, True][:len(by)]
             df_out = df_out.sort_values(by=by, ascending=asc).reset_index(drop=True)
-        return df_out
+
+        return df_out, reasons_counter, fail_df, total_checked
 
     if st.button("🚀 Find Matches (Start from Zero)", use_container_width=True):
         if not TOKEN:
@@ -421,17 +496,33 @@ with right:
             st.warning("Load the US symbol list first (click 'Load US symbol list').")
         else:
             with st.spinner("Scanning for pattern matches…"):
-                res = _find_matches(scan_kind, lookback, TOKEN, pool, int(start_offset), int(max_checks), int(max_results), apply_sm)
+                res, sm_counts, sm_fail_df, total_checked = _find_matches(
+                    scan_kind, lookback, TOKEN, pool, int(start_offset), int(max_checks), int(max_results), apply_sm
+                )
             st.session_state["us_scan_df"] = res
-            st.success(f"Done. Matches: {len(res)}")
+            st.session_state["us_sm_counts"] = sm_counts
+            st.session_state["us_sm_fail_examples"] = sm_fail_df
+            st.success(f"Done. Checked: {total_checked} • Matches: {len(res)}")
 
+    # Results + Smart Money drop-off explanation
     res = st.session_state.get("us_scan_df", pd.DataFrame())
+    sm_counts = st.session_state.get("us_sm_counts", Counter())
+    sm_fail_df = st.session_state.get("us_sm_fail_examples", pd.DataFrame())
+
+    # Show Smart Money summary regardless of matches to see why it went to zero
+    _render_sm_summary(
+        total_checked = (0 if sm_counts is None else (sum(sm_counts.values()) + len(res))),
+        reasons_counter = sm_counts if isinstance(sm_counts, Counter) else Counter(),
+        fail_examples_df = sm_fail_df if isinstance(sm_fail_df, pd.DataFrame) else pd.DataFrame()
+    )
+
     if not res.empty:
         order = pd.Categorical(res["Buy Today"], categories=["Buy Today","Buy in 2–3 days"], ordered=True)
         res = res.assign(_order=order).sort_values(["_order","RVOL","VST"], ascending=[True, False, False]).drop(columns=["_order"]).reset_index(drop=True)
 
         # Primary table
         show_cols = [c for c in ["Symbol","Sector","% PRC","RS","RT","VST","Volume","30D Volume","RVOL","Vol %","Buy Today"] if c in res.columns]
+        st.markdown("### Smart Money — Passed")
         st.dataframe(res[show_cols], use_container_width=True, hide_index=True)
 
         # Click-to-toggle expanders with preview & queue actions
@@ -444,7 +535,10 @@ with right:
                     if st.button(f"🔍 Preview {getattr(r,'Symbol')}", key=f"preview_{getattr(r,'Symbol')}"):
                         st.session_state["preview_symbol"] = getattr(r,'Symbol')
                         st.rerun()
-                    st.write(pd.Series(r._asdict() if hasattr(r,"_asdict") else res.iloc[[0]].to_dict(), name="Details"))
+                    try:
+                        st.write(pd.Series(r._asdict(), name="Details"))
+                    except Exception:
+                        st.write(res.loc[res["Symbol"]==getattr(r,'Symbol')].T)
                 with cB:
                     if st.button(f"➕ Add {getattr(r,'Symbol')} to Today's Queue", key=f"queue_{getattr(r,'Symbol')}"):
                         add_to_queue(getattr(r,'Symbol'), "USA"); st.toast(f"Added {getattr(r,'Symbol')}")
@@ -463,7 +557,7 @@ with right:
                 for s in res["Symbol"].tolist(): add_to_queue(s, "USA")
                 st.success("Queued all results.")
     else:
-        st.info("Click **Load US symbol list** → **Find Matches** to start from zero.")
+        st.info("No final matches. See the **Top filter reasons** above to adjust thresholds (e.g., earnings window, liquidity floors, momentum/trend gates, options requirements).")
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Economic Calendar & Earnings
