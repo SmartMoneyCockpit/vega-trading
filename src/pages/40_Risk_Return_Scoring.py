@@ -8,20 +8,24 @@ from src.engine import risk_scoring as rs
 
 st.set_page_config(page_title="Risk & Return Scoring", page_icon="📊", layout="wide")
 st.title("📊 Risk Return Scoring")
-st.caption("Upload price history (CSV with columns: **date**, **close**). Optional: upload a benchmark CSV to compute beta/alpha.")
+st.caption("Upload price history (CSV with columns: **date**, **close**). Optional: upload a benchmark CSV to compute beta/alpha. Batch mode supports multiple asset CSVs.")
 
 with st.expander("Upload CSV", expanded=True):
     c1, c2 = st.columns(2)
     with c1:
-        f_asset = st.file_uploader("Asset CSV", type=["csv"], accept_multiple_files=False)
+        f_asset = st.file_uploader("Asset CSV", type=["csv"], accept_multiple_files=False, key="single_asset")
     with c2:
-        f_bench = st.file_uploader("Benchmark CSV (optional)", type=["csv"], accept_multiple_files=False)
+        f_bench = st.file_uploader("Benchmark CSV (optional)", type=["csv"], accept_multiple_files=False, key="bench_csv")
+    st.write("**Expected columns:** `date`, `close` (other columns ignored). Dates parsed with `pd.to_datetime`.")
 
-    st.write("**Expected columns:** `date`, `close` (other columns ignored). Dates will be parsed with `pd.to_datetime`.")
+with st.expander("Batch Upload (multi-asset)", expanded=False):
+    batch_files = st.file_uploader("Upload multiple asset CSVs (filenames used as symbols)", type=["csv"], accept_multiple_files=True, key="batch_assets")
 
 st.divider()
 
-c1, c2, c3, c4 = st.columns(4)
+c0, c1, c2, c3, c4 = st.columns([1,1,1,1,1])
+with c0:
+    preset = st.selectbox("Weight preset", list(rs.PRESETS.keys()) + ["Custom"], index=0)
 with c1:
     freq = st.selectbox("Frequency", ["D","W","M"], index=0)
 with c2:
@@ -29,10 +33,13 @@ with c2:
 with c3:
     price_col = st.text_input("Price column", value="close")
 with c4:
-    go = st.button("Compute Score", type="primary")
+    run_single = st.button("Compute Score (single)", type="primary")
 
-with st.expander("Weights (0..1, auto-normalized)", expanded=False):
-    w_defaults = rs.DEFAULT_WEIGHTS.copy()
+with st.expander("Custom Weights (0..1, auto-normalized)", expanded=(preset=="Custom")):
+    if preset == "Custom":
+        w_defaults = rs.DEFAULT_WEIGHTS.copy()
+    else:
+        w_defaults = rs.PRESETS[preset].copy()
     weights = {}
     cols = st.columns(len(w_defaults))
     for i, (k,v) in enumerate(w_defaults.items()):
@@ -47,7 +54,7 @@ with st.expander("Rolling Metrics", expanded=False):
     with c5:
         roll_window = st.number_input("Rolling window (trading days)", value=63, min_value=10, max_value=252, step=1)
     with c6:
-        show_rolling = st.checkbox("Show rolling Sharpe & Volatility charts", value=True)
+        show_rolling = st.checkbox("Show rolling Sharpe/Vol and Rolling Beta (if benchmark provided)", value=True)
 
 @st.cache_data(show_spinner=False)
 def _load_csv(uploaded):
@@ -60,7 +67,13 @@ def _load_csv(uploaded):
         df = df.rename(columns={df.columns[0]:"date"}).sort_values("date").set_index("date")
     return df
 
-if go:
+def _symbol_from_name(uploaded):
+    name = getattr(uploaded, "name", "ASSET")
+    base = os.path.splitext(os.path.basename(name))[0]
+    return base.upper()
+
+# ===== Single-asset mode =====
+if run_single:
     if not f_asset:
         st.error("Please upload an Asset CSV.")
     else:
@@ -68,9 +81,7 @@ if go:
             asset = _load_csv(f_asset)
             bench = _load_csv(f_bench) if f_bench else None
 
-            metrics = rs.score_from_prices(
-                df=asset, benchmark=bench, price_col=price_col, rf=rf, freq=freq, weights=weights
-            )
+            metrics = rs.score_from_prices(df=asset, benchmark=bench, price_col=price_col, rf=rf, freq=freq, weights=weights)
 
             st.subheader("Results")
             cA, cB = st.columns([1,1])
@@ -91,30 +102,63 @@ if go:
             st.subheader("Charts")
             r = asset[price_col].pct_change().dropna()
             eq = (1 + r).cumprod()
-            st.line_chart(eq.rename("Equity Curve"))
-            st.line_chart(r.rename("Periodic Returns"))
+            st.line_chart(eq.rename("Equity Curve (Asset)"))
+
+            if bench is not None:
+                rb = bench[price_col].pct_change().dropna()
+                eq_b = (1 + rb).cumprod()
+                combined = pd.concat([eq.rename("Asset"), eq_b.rename("Benchmark")], axis=1).dropna()
+                st.line_chart(combined)
+
+            st.line_chart(r.rename("Periodic Returns (Asset)"))
 
             if show_rolling:
                 rm = rs.rolling_metrics(r, window=int(roll_window))
-                st.line_chart(rm["roll_sharpe"].rename("Rolling Sharpe"))
-                st.line_chart(rm["roll_vol"].rename("Rolling Volatility (ann.)"))
+                st.line_chart(rm["roll_sharpe"].rename("Rolling Sharpe (Asset)"))
+                st.line_chart(rm["roll_vol"].rename("Rolling Volatility (ann., Asset)"))
+                if bench is not None:
+                    rb = bench[price_col].pct_change().dropna()
+                    roll_beta = rs.rolling_beta(r, rb, window=int(roll_window))
+                    st.line_chart(roll_beta.rename("Rolling Beta vs Benchmark"))
 
-            # --- Exports ---
+            # Exports
             st.subheader("Export")
-            # Metrics JSON
             jbuf = io.StringIO()
             json.dump(metrics, jbuf, indent=2, default=lambda x: None)
             st.download_button("Download metrics (JSON)", data=jbuf.getvalue(), file_name="risk_metrics.json", mime="application/json")
 
-            # Summary CSV with a single row
-            sym_guess = "ASSET"
+            sym_guess = _symbol_from_name(f_asset)
             row_df = rs.metrics_to_row(sym_guess, metrics)
             csv_buf = io.StringIO()
             row_df.to_csv(csv_buf, index=False)
-            st.download_button("Download summary (CSV)", data=csv_buf.getvalue(), file_name="risk_metrics_summary.csv", mime="text/csv")
+            st.download_button("Download summary (CSV)", data=csv_buf.getvalue(), file_name=f"{sym_guess}_risk_metrics_summary.csv", mime="text/csv")
 
-            st.success("Done. Adjust weights/rolling window and recompute anytime.")
+            st.success("Single-asset scoring complete.")
         except Exception as e:
             st.exception(e)
 else:
-    st.info("Upload data to score.")
+    st.info("Upload data to score (single) or use Batch mode below.")
+
+# ===== Batch mode =====
+st.subheader("Batch Scoring")
+run_batch = st.button("Run Batch Scoring", type="secondary", disabled=(len(batch_files)==0))
+if run_batch:
+    try:
+        assets = {}
+        for f in batch_files:
+            df = _load_csv(f)
+            sym = _symbol_from_name(f)
+            assets[sym] = df
+        bench = _load_csv(f_bench) if f_bench else None
+        results = rs.batch_score(assets, benchmark=bench, price_col=price_col, rf=rf, freq=freq, weights=weights)
+        results = results.sort_values("score", ascending=False)
+        st.dataframe(results, use_container_width=True)
+
+        # Download
+        csv_buf = io.StringIO()
+        results.to_csv(csv_buf, index=False)
+        st.download_button("Download batch results (CSV)", data=csv_buf.getvalue(), file_name="batch_risk_scoring.csv", mime="text/csv")
+
+        st.success("Batch scoring complete.")
+    except Exception as e:
+        st.exception(e)
