@@ -12,7 +12,7 @@ from src.engine.vector_metrics import compute_from_df
 # -----------------------------
 # Page header
 # -----------------------------
-st.set_page_config(page_title="USA Text Dashboard", page_icon="🗺️", layout="wide")
+st.set_page_config(page_title="USA Text Dashboard", page_icon="🗺", layout="wide")
 st.title("USA Text Dashboard")
 st.success(make_light_badge("USA"))
 
@@ -181,7 +181,7 @@ with right:
             st.session_state["us_scan_results"] = res
             st.success("Scanner finished successfully.")
 
-    if clear_col.button("🗑️ Clear", use_container_width=True):
+    if clear_col.button("🗑 Clear", use_container_width=True):
         st.session_state["us_scan_results"] = pd.DataFrame()
 
     res = st.session_state["us_scan_results"]
@@ -202,7 +202,7 @@ with right:
             add_to_queue(pick, "USA")
             st.toast(f"Added {pick} to Today's Trades")
     else:
-        st.info("Click **Run Scanner** to generate results.")
+        st.info("Click *Run Scanner* to generate results.")
 
 sel = st.session_state.get("sel_us")
 if sel:
@@ -212,47 +212,193 @@ if sel:
 
 st.markdown("---")
 
-# =========================
-# === ECON CAL + EARNINGS SPLIT (TRADINGVIEW EMBEDS, USA ONLY)
-# =========================
-st.markdown("---")
-st.header("🗓️ Economic Calendar & 💼 Earnings (Split View)")
+# ──────────────────────────────────────────────────────────────────────────────
+# ECONOMIC CALENDAR + EARNINGS (Split View, Inline Section)
+# Drop this block directly inside your existing Streamlit page.
+# Toggle source:
+USE_TRADINGVIEW = True  # True = TradingView widgets (no API key), False = EODHD tables
 
-col_left, col_mid, col_right = st.columns([0.475, 0.05, 0.475], gap="small")
+import os, json, time, requests, pandas as pd, streamlit as st
+from datetime import date, timedelta
+from typing import Optional, Dict, List
 
-with col_left:
-    st.subheader("📆 Economic Calendar (TradingView • USA)")
-    st.components.v1.html(
-        """
+# ── Styles: black divider, compact tables
+st.markdown("""
+<style>
+.inline-black-divider{width:100%;height:520px;min-height:520px;background:#000;border-radius:8px;}
+.stDataFrame table td,.stDataFrame table th{font-size:.9rem !important;line-height:1.2 !important;}
+.section-card{padding:.6rem .8rem;border:1px solid rgba(255,255,255,.08);border-radius:12px;background:rgba(255,255,255,.02);}
+.metric-pill{padding:2px 8px;border-radius:999px;border:1px solid rgba(255,255,255,.12);font-size:.8rem;background:rgba(255,255,255,.04);}
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown("### 📅 Economic Calendar & 💼 Earnings (Split View)")
+
+left, mid, right = st.columns([1, 0.05, 1])
+
+# ── Common header (keeps your page context)
+with left:
+    st.caption("Economic Calendar (left)")
+with right:
+    st.caption("Earnings (right)")
+with mid:
+    st.markdown('<div class="inline-black-divider"></div>', unsafe_allow_html=True)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# OPTION A: TradingView widgets (no API key)
+# ──────────────────────────────────────────────────────────────────────────────
+if USE_TRADINGVIEW:
+    import streamlit.components.v1 as components
+
+    tv_height = 560  # adjust to taste
+
+    with left:
+        st.markdown('<div class="section-card">', unsafe_allow_html=True)
+        st.markdown("##### 📊 Economic Calendar (TradingView • USA/CAD/MXN)")
+        components.html(f"""
         <div class="tradingview-widget-container">
-          <iframe
-            src="https://s.tradingview.com/embed-widget/economic-calendar/?locale=en#%7B%22width%22%3A%22100%25%22%2C%22height%22%3A600%2C%22colorTheme%22%3A%22light%22%2C%22isTransparent%22%3Afalse%2C%22importanceFilter%22%3A%22-1%2C0%2C1%22%2C%22country%22%3A%22US%22%7D"
-            width="100%" height="600" frameborder="0" scrolling="no" allowtransparency="true">
-          </iframe>
+          <div class="tradingview-widget-container__widget"></div>
+          <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-events.js" async>
+          {{
+            "colorTheme": "dark",
+            "isTransparent": true,
+            "width": "100%",
+            "height": "{tv_height}",
+            "locale": "en",
+            "importanceFilter": "-1,0,1",
+            "currencyFilter": "USD,CAD,MXN"
+          }}
+          </script>
         </div>
-        """,
-        height=620
-    )
+        """, height=tv_height, scrolling=False)
+        st.markdown('</div>', unsafe_allow_html=True)
 
-with col_mid:
-    st.markdown(
-        "<div style='width:100%;height:100%;min-height:600px;background:black;border-radius:6px;'></div>",
-        unsafe_allow_html=True
-    )
-
-with col_right:
-    st.subheader("💼 Upcoming Earnings (TradingView • USA)")
-    st.components.v1.html(
-        """
+    with right:
+        st.markdown('<div class="section-card">', unsafe_allow_html=True)
+        st.markdown("##### 💼 Upcoming Earnings (TradingView • US)")
+        components.html(f"""
         <div class="tradingview-widget-container">
-          <iframe
-            src="https://s.tradingview.com/embed-widget/screener/?locale=en#%7B%22defaultScreen%22%3A%22upcoming_earnings%22%2C%22defaultColumn%22%3A%22earnings_date%22%2C%22defaultFilter%22%3A%22country%3Dunited_states%22%2C%22width%22%3A%22100%25%22%2C%22height%22%3A600%2C%22colorTheme%22%3A%22light%22%2C%22isTransparent%22%3Afalse%7D"
-            width="100%" height="600" frameborder="0" scrolling="no" allowtransparency="true">
-          </iframe>
+          <div class="tradingview-widget-container__widget"></div>
+          <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-earnings.js" async>
+          {{
+            "colorTheme": "dark",
+            "isTransparent": true,
+            "width": "100%",
+            "height": "{tv_height}",
+            "locale": "en",
+            "exchange": "US"
+          }}
+          </script>
         </div>
-        """,
-        height=620
-    )
+        """, height=tv_height, scrolling=False)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# OPTION B: EODHD API tables (requires EODHD_API_TOKEN)
+# ──────────────────────────────────────────────────────────────────────────────
+else:
+    def _get_token()->Optional[str]:
+        token = os.getenv("EODHD_API_TOKEN")
+        if token: return token
+        try: return st.secrets.get("EODHD_API_TOKEN")  # type: ignore[attr-defined]
+        except Exception: return None
+
+    def _safe_request(url:str, params:Dict[str,str], timeout:int=20):
+        try:
+            r = requests.get(url, params=params, timeout=timeout)
+            if r.status_code==200:
+                data = r.json()
+                if isinstance(data, list): return data
+                if isinstance(data, dict):
+                    for k in ("events","earnings","data","items"):
+                        if k in data and isinstance(data[k], list): return data[k]
+                    return [data]
+            else:
+                st.warning(f"EODHD HTTP {r.status_code}: {r.text[:200]}")
+        except Exception as e:
+            st.error(f"Request error: {e}")
+        return []
+
+    @st.cache_data(ttl=300, show_spinner=False)
+    def fetch_economic_events(token:str, start:str, end:str):
+        base = "https://eodhd.com/api/economic-events"
+        params = {"from":start,"to":end,"api_token":token,"fmt":"json","limit":"2000"}
+        data = _safe_request(base, params)
+        if not data: return pd.DataFrame(columns=["date","country","event","impact","actual","estimate","previous","unit"])
+        df = pd.DataFrame(data).rename(columns={"importance":"impact"})
+        if "date" in df: df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        keep = [c for c in ["date","country","event","impact","actual","estimate","previous","unit","source"] if c in df.columns]
+        return df[keep].sort_values("date").reset_index(drop=True)
+
+    @st.cache_data(ttl=300, show_spinner=False)
+    def fetch_earnings(token:str, start:str, end:str, symbols:str=""):
+        base = "https://eodhd.com/api/calendar/earnings"
+        params = {"from":start,"to":end,"api_token":token,"fmt":"json","limit":"5000"}
+        if symbols.strip(): params["symbols"] = symbols.replace(" ","")
+        data = _safe_request(base, params)
+        if not data: return pd.DataFrame(columns=["reportDate","time","symbol","exchange","name","epsEstimated","epsActual"])
+        df = pd.DataFrame(data).rename(columns={"code":"symbol","epsEstimate":"epsEstimated"})
+        if "reportDate" in df: df["reportDate"] = pd.to_datetime(df["reportDate"], errors="coerce")
+        keep = [c for c in ["reportDate","time","symbol","exchange","name","epsEstimated","epsActual","revenueEstimated","revenueActual","currency"] if c in df.columns]
+        return df[keep].sort_values(["reportDate","symbol"] if "symbol" in df.columns else ["reportDate"]).reset_index(drop=True)
+
+    # Controls (compact, inline)
+    start_default = date.today() - timedelta(days=3)
+    end_default   = date.today() + timedelta(days=14)
+    with left:
+        st.markdown('<div class="section-card">', unsafe_allow_html=True)
+        d1, d2 = st.columns(2)
+        with d1:
+            econ_dates = st.date_input("Date range", (start_default, end_default), key="econ_dates_inline")
+        with d2:
+            econ_impact = st.multiselect("Impact filter", ["low","medium","high"], key="econ_impact_inline")
+        st.markdown('</div>', unsafe_allow_html=True)
+    with right:
+        st.markdown('<div class="section-card">', unsafe_allow_html=True)
+        s1, s2 = st.columns([2,1])
+        with s1:
+            earn_symbols = st.text_input("Symbols (comma, optional)", key="earn_symbols_inline", placeholder="AAPL,MSFT,TSLA")
+        with s2:
+            st.write(" ")  # spacing
+            if st.button("🔄 Refresh", key="earn_refresh_inline"):
+                st.cache_data.clear()
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    # Dates
+    if isinstance(econ_dates, tuple) and len(econ_dates)==2:
+        start_date, end_date = econ_dates
+    else:
+        start_date, end_date = start_default, end_default
+
+    token = _get_token()
+    if not token:
+        with left:  st.error("Set *EODHD_API_TOKEN* in env or st.secrets.")
+        with right: st.stop()
+
+    # Fetch + show
+    econ_df = fetch_economic_events(token, start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
+    earn_df = fetch_earnings(token, start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"), earn_symbols or "")
+
+    # Apply simple filters
+    if econ_impact and "impact" in econ_df.columns:
+        econ_df = econ_df[econ_df["impact"].astype(str).str.lower().isin([x.lower() for x in econ_impact])]
+
+    # Render tables
+    with left:
+        st.markdown(f"*Results:* <span class='metric-pill'>{len(econ_df)}</span>", unsafe_allow_html=True)
+        cols = [c for c in ["date","country","event","impact","actual","estimate","previous","unit","source"] if c in econ_df.columns]
+        st.dataframe(econ_df[cols], use_container_width=True, hide_index=True)
+        st.download_button("⬇ Download Economic Events (CSV)", econ_df.to_csv(index=False).encode("utf-8"),
+                           file_name=f"economic_{start_date}_{end_date}.csv", mime="text/csv")
+
+    with right:
+        st.markdown(f"*Results:* <span class='metric-pill'>{len(earn_df)}</span>", unsafe_allow_html=True)
+        for c in ("epsEstimated","epsActual","revenueEstimated","revenueActual"):
+            if c in earn_df.columns: earn_df[c] = pd.to_numeric(earn_df[c], errors="coerce")
+        cols = [c for c in ["reportDate","time","symbol","exchange","name","epsEstimated","epsActual","revenueEstimated","revenueActual","currency"] if c in earn_df.columns]
+        st.dataframe(earn_df[cols], use_container_width=True, hide_index=True)
+        st.download_button("⬇ Download Earnings (CSV)", earn_df.to_csv(index=False).encode("utf-8"),
+                           file_name=f"earnings_{start_date}_{end_date}.csv", mime="text/csv") 
 
 # =========================
 # === NEWS & MORNING REPORT
@@ -268,7 +414,7 @@ with col1:
         with open(report_path, "r", encoding="utf-8") as f:
             st.markdown(f.read())
     else:
-        st.info("No `reports/usa_morning.md` file yet — it will appear once your Morning Digest cron runs.")
+        st.info("No reports/usa_morning.md file yet — it will appear once your Morning Digest cron runs.")
 
 with col2:
     st.subheader("Market News (from data/news.json)")
@@ -286,14 +432,14 @@ with col2:
             ts = n.get("ts", "")
             url = n.get("url", "")
             with st.container(border=True):
-                st.markdown(f"**{title}**")
+                st.markdown(f"{title}")
                 meta = " • ".join([x for x in [src, ts] if x])
                 if meta:
                     st.caption(meta)
                 if url:
                     st.link_button("Open", url, use_container_width=True)
     else:
-        st.info("`data/news.json` is empty. Your `vega-home-feeds` cron will populate this automatically.")
+        st.info("data/news.json is empty. Your vega-home-feeds cron will populate this automatically.")
 
 st.markdown("---")
 render_queue()
