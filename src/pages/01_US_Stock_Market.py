@@ -66,7 +66,7 @@ with left:
 with right:
     st.subheader("Local Scans")
 
-    # Symbols to scan (no CSV required; uses yfinance internally)
+    # Symbols to scan
     symbols_txt = st.text_area(
         "Symbols (comma or newline separated)",
         "AAPL, MSFT, NVDA, AMZN, META, TSLA, QQQ, SPY",
@@ -74,18 +74,15 @@ with right:
     )
     lookback = st.number_input("Lookback bars", min_value=100, max_value=3000, value=400, step=50)
 
-    # Session storage for results
     if "us_scan_results" not in st.session_state:
         st.session_state["us_scan_results"] = pd.DataFrame()
 
-    # --- Helpers ---
     def parse_symbols(s: str):
         if not s:
             return []
         raw = [x.strip().upper() for x in s.replace("\n", ",").split(",")]
         return [x for x in raw if x]
 
-    # Simple wedge detector (self-contained)
     def _load_ohlc(symbol: str, lookback: int = 400):
         try:
             import yfinance as yf
@@ -121,7 +118,7 @@ with right:
 
     def _is_rising_wedge(df):
         highs = df["High"].values
-        lows  = df["Low"].values
+        lows = df["Low"].values
         m_hi, b_hi, m_lo, b_lo, fit = _channel_slope_quality(highs, lows)
         cond = (m_hi > 0) and (m_lo > 0) and (m_hi < m_lo)
         score = float(fit + (m_lo - m_hi))
@@ -129,7 +126,7 @@ with right:
 
     def _is_falling_wedge(df):
         highs = df["High"].values
-        lows  = df["Low"].values
+        lows = df["Low"].values
         m_hi, b_hi, m_lo, b_lo, fit = _channel_slope_quality(highs, lows)
         cond = (m_hi < 0) and (m_lo < 0) and (m_lo > m_hi)
         score = float(fit + (m_lo - m_hi))
@@ -163,16 +160,13 @@ with right:
         return pd.DataFrame(out).sort_values("score", ascending=False).reset_index(drop=True)
 
     def safe_passes_rules(sym: str, region: str = "USA"):
-        """Safely call passes_rules; swallow the known datetime mismatch crash."""
         try:
             return passes_rules(sym, region) or {"pass": False}
         except TypeError:
-            # Known bug in older within_earnings_window() (datetime64 vs Timestamp)
             return {"pass": False}
         except Exception:
             return {"pass": False}
 
-    # Run / Clear buttons
     run_col, clear_col = st.columns([2, 1])
     if run_col.button("🔍 Run Scanner", use_container_width=True):
         symbols = parse_symbols(symbols_txt)
@@ -183,8 +177,6 @@ with right:
                 if scan_kind in ("Rising Wedge", "Falling Wedge", "Both (Wedges)"):
                     res = run_wedge_scan(symbols, which=scan_kind, lookback=lookback)
                 else:
-                    # Vega Smart Money (Today) — delegate to your engine on the same symbols if available
-                    # Fallback: run wedges and mark pass via engine
                     res = run_wedge_scan(symbols, which="Both (Wedges)", lookback=lookback)
             st.session_state["us_scan_results"] = res
             st.success("Scanner finished successfully.")
@@ -192,11 +184,9 @@ with right:
     if clear_col.button("🗑️ Clear", use_container_width=True):
         st.session_state["us_scan_results"] = pd.DataFrame()
 
-    # Display results
     res = st.session_state["us_scan_results"]
     if not res.empty:
         res = res.copy()
-        # Smart Money pass/fail column (safe)
         res["pass"] = [
             "✅" if safe_passes_rules(sym, "USA").get("pass") else "⛔"
             for sym in res["symbol"]
@@ -214,7 +204,6 @@ with right:
     else:
         st.info("Click **Run Scanner** to generate results.")
 
-# If a symbol was sent from the scan results, update the chart
 sel = st.session_state.get("sel_us")
 if sel:
     st.success(f"Chart updated to: {sel}")
@@ -224,7 +213,7 @@ if sel:
 st.markdown("---")
 
 # =========================
-# === ECON CAL + EARNINGS SPLIT
+# === ECON CAL + EARNINGS SPLIT (TRADINGVIEW EMBEDS)
 # =========================
 st.markdown("---")
 st.header("🗓️ Economic Calendar & 💼 Earnings (Split View)")
@@ -232,36 +221,45 @@ st.header("🗓️ Economic Calendar & 💼 Earnings (Split View)")
 col_left, col_mid, col_right = st.columns([0.475, 0.05, 0.475], gap="small")
 
 with col_left:
-    st.subheader("📆 Economic Calendar")
-    economic_calendar(country="US", height=520)
+    st.subheader("📆 Economic Calendar (TradingView)")
+    st.components.v1.html(
+        """
+        <div class="tradingview-widget-container">
+          <iframe
+            src="https://s.tradingview.com/embed-widget/economic-calendar/?locale=en#%7B%22width%22%3A%22100%25%22%2C%22height%22%3A600%2C%22colorTheme%22%3A%22light%22%2C%22isTransparent%22%3Afalse%2C%22importanceFilter%22%3A%22-1%2C0%2C1%22%2C%22country%22%3A%22US%22%7D"
+            width="100%"
+            height="600"
+            frameborder="0"
+            allowtransparency="true"
+            scrolling="no"></iframe>
+        </div>
+        """,
+        height=620
+    )
 
 with col_mid:
     st.markdown(
-        "<div style='width:100%;height:100%;min-height:580px;background:black;border-radius:6px;'></div>",
+        "<div style='width:100%;height:100%;min-height:600px;background:black;border-radius:6px;'></div>",
         unsafe_allow_html=True
     )
 
 with col_right:
-    st.subheader("💼 Upcoming Earnings")
-    try:
-        import pandas as _pd
-        import datetime as _dt
-        _csv_path = "data/earnings/calendar.csv"
-        if os.path.exists(_csv_path):
-            _df = _pd.read_csv(_csv_path)
-            _df["date"] = _pd.to_datetime(_df["date"], errors="coerce")
-            _today = _pd.Timestamp(_dt.date.today())
-            _horizon_days = st.slider("Horizon (days)", min_value=7, max_value=120, value=60, step=7)
-            _limit = _today + _pd.Timedelta(days=_horizon_days)
-            _up = _df[_df["date"].between(_today, _limit)].sort_values("date")
-            if _up.empty:
-                st.info("No upcoming earnings within the selected horizon.")
-            else:
-                st.dataframe(_up.reset_index(drop=True), use_container_width=True, hide_index=True)
-        else:
-            st.info("`data/earnings/calendar.csv` not found. Add earnings to display upcoming symbols.")
-    except Exception as _e:
-        st.warning(f"Earnings panel encountered an issue: {_e}")
+    st.subheader("💼 Upcoming U.S. Earnings (TradingView Screener)")
+    st.components.v1.html(
+        """
+        <div class="tradingview-widget-container">
+          <iframe
+            src="https://s.tradingview.com/embed-widget/screener/?locale=en#%7B%22defaultScreen%22%3A%22upcoming_earnings%22%2C%22defaultColumn%22%3A%22earnings_date%22%2C%22defaultFilter%22%3A%22country%3Dunited_states%22%2C%22width%22%3A%22100%25%22%2C%22height%22%3A600%2C%22colorTheme%22%3A%22light%22%2C%22isTransparent%22%3Afalse%7D"
+            width="100%"
+            height="600"
+            frameborder="0"
+            allowtransparency="true"
+            scrolling="no"></iframe>
+        </div>
+        """,
+        height=620
+    )
+
 # =========================
 # === NEWS & MORNING REPORT
 # =========================
@@ -290,9 +288,9 @@ with col2:
     if items:
         for n in items[:12]:
             title = n.get("title", "(no title)")
-            src   = n.get("source", "")
-            ts    = n.get("ts", "")
-            url   = n.get("url", "")
+            src = n.get("source", "")
+            ts = n.get("ts", "")
+            url = n.get("url", "")
             with st.container(border=True):
                 st.markdown(f"**{title}**")
                 meta = " • ".join([x for x in [src, ts] if x])
@@ -305,4 +303,3 @@ with col2:
 
 st.markdown("---")
 render_queue()
-
