@@ -1,12 +1,18 @@
-
 # US_Stock_Market.py
-# USA Text Dashboard — Start-from-zero Pattern Scanner + EODHD Earnings + TV Calendar + EODHD News
+# USA Text Dashboard — Start-from-zero Pattern Scanner + Vector-style Output + EODHD Earnings + TV Calendar + EODHD News
 # Requires: EODHD_API_TOKEN in env or st.secrets
+# Also uses: yfinance (pip install yfinance)
 
 import os, json, requests, pandas as pd, numpy as np, streamlit as st
 from datetime import date, timedelta
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Tuple
 import urllib.parse
+
+try:
+    import yfinance as yf
+    HAS_YF = True
+except Exception:
+    HAS_YF = False
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Optional integrations (graceful fallbacks)
@@ -185,9 +191,69 @@ def tag_short(row: pd.Series) -> bool:
 def tag_momentum(row: pd.Series) -> bool:
     return bool(row["EMA20"] > row["EMA50"] > row["EMA200"] and row["RSI14"] >= 60 and row["Close"] >= 0.98*(row["High20"] or row["Close"]) and row["Volume"] >= 1.2*(row["AvgVol20"] or 1))
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Scanner & Chart
-# ──────────────────────────────────────────────────────────────────────────────
+# ───────── Vector-style scoring (approximations) ─────────
+def score_rt(df: pd.DataFrame) -> float:
+    if len(df) < 60: return 0.0
+    c = df["Close"]
+    r4 = (c.iloc[-1] / c.iloc[-20] - 1.0) if len(c) >= 20 else 0.0
+    r12 = (c.iloc[-1] / c.iloc[-60] - 1.0) if len(c) >= 60 else 0.0
+    val = 1.0 + 0.6*r4 + 0.4*r12
+    return round(float(max(0.0, val)), 3)
+
+def score_rs(df: pd.DataFrame) -> float:
+    if len(df) < 60: return 0.0
+    ret = df["Close"].pct_change().dropna()
+    vol = ret.rolling(20).std().iloc[-1] if len(ret) >= 20 else ret.std()
+    if vol is None or vol == 0 or np.isnan(vol): return 1.0
+    rs = 1.0 / float(vol * 15)
+    return round(float(min(max(rs, 0.1), 2.0)), 3)
+
+def score_rv(price: float, eps: Optional[float], grt: Optional[float]) -> float:
+    if eps is None or eps <= 0 or grt is None or np.isnan(grt): 
+        return 1.0
+    pe = price / eps if eps else np.nan
+    if not pe or pe <= 0: return 1.0
+    peg = pe / max(grt, 0.01)
+    rv = 1.5 / peg
+    return round(float(min(max(rv, 0.1), 2.0)), 3)
+
+def score_vst(rt: float, rv: float, rs: float) -> float:
+    return round(float(0.4*rt + 0.3*rv + 0.3*rs), 3)
+
+def score_ci(df: pd.DataFrame) -> float:
+    if len(df) < 60: return 0.8
+    ok_trend = (df["EMA20"].iloc[-1] > df["EMA50"].iloc[-1] > df["EMA200"].iloc[-1])
+    dd = (df["High20"].iloc[-1] - df["Low20"].iloc[-1]) / max(df["High20"].iloc[-1], 1e-9)
+    ci = 1.2 if ok_trend else 0.8
+    ci -= 0.5*dd
+    return round(float(min(max(ci, 0.1), 1.5)), 3)
+
+def compute_stop(row: pd.Series) -> float:
+    return round(float(row["EMA50"] - 2.0*row["ATR14"]), 4)
+
+def decide_buy_today(row: pd.Series, kind: str, rt: float, vst: float) -> Tuple[str, float, float]:
+    near_break = row["Close"] >= 0.99*(row["High20"] or row["Close"])
+    pullback_ok = row["Close"] > row["EMA20"] and row["EMA20"] > row["EMA50"]
+    vol_ok = row["Volume"] >= 1.2*(row["AvgVol20"] or 1)
+    trend_up = row["EMA20"] > row["EMA50"] > row["EMA200"]
+    momentum_ok = row["RSI14"] >= 55
+
+    ok_now = trend_up and momentum_ok and (near_break or pullback_ok) and vol_ok
+    if kind == "Short Stock":
+        ok_now = (row["EMA20"] < row["EMA50"] < row["EMA200"]) and row["RSI14"] <= 45 and vol_ok
+
+    entry = float(row["Close"])
+    stop  = compute_stop(row)
+
+    if ok_now and rt >= 1.05 and vst >= 1.0:
+        return ("Buy Today", entry, stop)
+    almost = trend_up and row["RSI14"] >= 50 and row["Close"] >= 0.97*(row["High20"] or row["Close"])
+    if kind == "Short Stock":
+        almost = (row["EMA20"] < row["EMA50"] < row["EMA200"]) and row["RSI14"] <= 50 and row["Close"] <= 1.03*(row["Low20"] or row["Close"])
+    if almost and rt >= 1.0 and vst >= 0.95:
+        return ("Buy in 2–3 days", entry, stop)
+    return ("Wait", entry, stop)
+
 st.markdown("### 🔎 Scanner & Chart")
 left, right = st.columns([3, 2], gap="large")
 
@@ -201,10 +267,10 @@ with left:
         st.info("`advanced_chart()` not found. Chart embed skipped.")
 
 with right:
-    st.subheader("Start from Zero — Find Matches")
+    st.subheader("Start from Zero — Find Matches (USA only)")
     lookback     = st.number_input("Lookback bars", 150, 3000, 420, 10)
     apply_sm     = st.checkbox("Apply Smart Money pre-filter (if available)", value=True)
-    max_checks   = st.number_input("Max symbols to check (budget)", 50, 5000, 800, 50)
+    max_checks   = st.number_input("HARD CAP: symbols to process", 50, 1000, 100, 25)
     max_results  = st.number_input("Max matches to return", 5, 1000, 150, 5)
     start_offset = st.number_input("Start offset in symbol list", 0, 50000, 0, 100)
 
@@ -222,10 +288,9 @@ with right:
                 ex_ok = {"NYSE","NASDAQ","AMEX","NYSE MKT","BATS","ARCX","OTC"}
                 if "Exchange" in df_all.columns:
                     df_all = df_all[df_all["Exchange"].astype(str).str.upper().isin(ex_ok)]
-                if "Code" in df_all.columns:
-                    pool = df_all["Code"].astype(str).str.upper().dropna().drop_duplicates().tolist()
-                else:
-                    pool = []
+                if "Type" in df_all.columns:
+                    df_all = df_all[~df_all["Type"].astype(str).str.contains("ETF|ETN|FUND|PREF|ADR|RIGHT|WARRANT", case=True, na=False)]
+                pool = df_all["Code"].astype(str).str.upper().dropna().drop_duplicates().tolist() if "Code" in df_all.columns else []
                 st.session_state["us_symbol_pool"] = pool
                 st.success(f"Loaded {len(pool)} US symbols.")
 
@@ -236,15 +301,16 @@ with right:
 
     @st.cache_data(ttl=300, show_spinner=False)
     def _find_matches(kind: str, lookback: int, token: str, pool: List[str], start_offset: int, max_checks: int, max_results: int, apply_sm_flag: bool) -> pd.DataFrame:
-        from datetime import date, timedelta
         start = (date.today() - timedelta(days=int(max(lookback * 1.2, 200)))).strftime("%Y-%m-%d")
         end   = date.today().strftime("%Y-%m-%d")
         out = []
-        checked = 0
-        for sym in pool[start_offset: start_offset + max_checks]:
+        processed = 0
+        for sym in pool[start_offset:]:
+            if processed >= int(max_checks):
+                break
             df = fetch_ohlcv(_eod_us(sym), start, end, token)
+            processed += 1
             if df.empty or len(df) < 120:
-                checked += 1
                 continue
             df = df.tail(max(lookback, 120))
             df = compute_indicators(df)
@@ -258,10 +324,9 @@ with right:
             elif kind == "Short Stock":
                 ok, score = tag_short(row), float(100 - row.get("RSI14", 0))
             else:
-                ok, score = tag_momentum(row), float(row.get("RSI14", 0))
+                ok, score = tag_momentum(row), float(row["RSI14"])
 
             if not ok:
-                checked += 1
                 continue
 
             sm_ok = True
@@ -269,27 +334,55 @@ with right:
                 try: sm_ok = bool(sm_passes(df))
                 except Exception: sm_ok = True
             if not sm_ok:
-                checked += 1
                 continue
+
+            rt = score_rt(df)
+            rs = score_rs(df)
+
+            eps = None; grt = None; sector = None; sales_growth = None
+            if HAS_YF:
+                try:
+                    info = yf.Ticker(sym).info
+                    eps = info.get("trailingEps", None)
+                    grt = info.get("earningsGrowth", None)
+                    sector = info.get("sector", None)
+                    sales_growth = info.get("revenueGrowth", None)
+                except Exception:
+                    pass
+            rv = score_rv(float(row["Close"]), eps, grt if grt is not None else (sales_growth if sales_growth is not None else 0.1))
+            vst = score_vst(rt, rv, rs)
+            ci  = score_ci(df)
+
+            label, entry, stop = decide_buy_today(row, kind, rt, vst)
+            if label == "Wait":
+                continue
+
+            pct_prc = (row["Close"] / df["Close"].iloc[-2] - 1.0)*100.0 if len(df) >= 2 else 0.0
+            chg = row["Close"] - df["Close"].iloc[-2] if len(df) >= 2 else 0.0
+            volpct = (row["Volume"] / (row["AvgVol20"] or 1) - 1.0)*100.0
 
             out.append({
                 "Symbol": sym.upper(),
-                "Tag": kind,
-                "Score": round(float(score), 4),
-                "Close": round(float(row["Close"]), 4),
-                "EMA20": round(float(row["EMA20"]), 4),
-                "EMA50": round(float(row["EMA50"]), 4),
-                "EMA200": round(float(row["EMA200"]), 4),
-                "RSI14": round(float(row["RSI14"]), 2),
-                "ATR14": round(float(row["ATR14"]), 4),
-                "Vol": int(row["Volume"]),
-                "AvgVol20": int(row["AvgVol20"]),
-                "High20": round(float(row["High20"]), 4),
-                "Low20": round(float(row["Low20"]), 4),
+                "Sector": sector or "",
+                "$ Change (From Yesterday)": round(float(chg), 4),
+                "% PRC": round(float(pct_prc), 2),
+                "Value": round(float(rv), 3),
+                "RS": round(float(rs), 3),
+                "RT": round(float(rt), 3),
+                "VST": round(float(vst), 3),
+                "CI": round(float(ci), 3),
+                "Stop": round(float(stop), 4),
+                "GRT": round(float(grt if grt is not None else 0.0), 3),
+                "EPS": round(float(eps), 3) if eps not in (None, np.nan) else None,
+                "Volume": int(row["Volume"]),
+                "30D Volume": int(row["AvgVol20"]),
+                "Vol %": round(float(volpct), 1),
+                "Sales Grwt": round(float(sales_growth if sales_growth is not None else 0.0), 3),
+                "Buy Today": label,
             })
-            if len(out) >= max_results:
+            if len(out) >= int(max_results):
                 break
-            checked += 1
+
         return pd.DataFrame(out)
 
     if st.button("🚀 Find Matches (Start from Zero)", use_container_width=True):
@@ -305,7 +398,9 @@ with right:
 
     res = st.session_state.get("us_scan_df", pd.DataFrame())
     if not res.empty:
-        res = res.sort_values(["Score","RSI14"], ascending=[False, False]).reset_index(drop=True)
+        order = pd.Categorical(res["Buy Today"], categories=["Buy Today","Buy in 2–3 days"], ordered=True)
+        res = res.assign(_order=order).sort_values(["_order","VST"], ascending=[True, False]).drop(columns=["_order"]).reset_index(drop=True)
+
         st.dataframe(res, use_container_width=True, hide_index=True)
         pick = st.selectbox("Preview / Queue", res["Symbol"].tolist())
         c1, c2, c3 = st.columns([1,1,1])
@@ -350,8 +445,6 @@ with right:
         st.info("Click **Load US symbol list** → **Find Matches** to start from zero.")
 
 st.markdown("---")
-
-# Economic Calendar & Earnings
 st.header("🗓️ Economic Calendar & 💼 Earnings (Split View)")
 st.markdown("<style>.inline-black-divider{width:100%;height:600px;min-height:600px;background:#000;border-radius:8px;}</style>", unsafe_allow_html=True)
 col_left, col_mid, col_right = st.columns([0.475, 0.05, 0.475], gap="small")
