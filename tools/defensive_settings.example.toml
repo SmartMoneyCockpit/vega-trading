@@ -1,0 +1,6 @@
+[weights]
+vix = 0.30
+ratio = 0.20
+yield_curve = 0.15
+breadth = 0.25
+flips = 0.10
