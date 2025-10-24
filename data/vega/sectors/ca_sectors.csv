@@ -1,0 +1,7 @@
+symbol,name,change_1d,change_5d,change_20d,rs_score
+TTF,Tech (TSX proxy),0.5,1.2,3.4,64
+ZIN,Industrials,0.1,-0.2,0.7,49
+XMA,Materials,-0.4,0.3,0.9,50
+ZEB,Financials,0.2,0.6,1.1,55
+XRE,Real Estate,-0.2,-0.4,0.1,42
+XIU,Large Cap (proxy),0.3,0.8,1.5,59

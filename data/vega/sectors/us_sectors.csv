@@ -1,0 +1,12 @@
+symbol,name,change_1d,change_5d,change_20d,rs_score
+XLK,Technology,0.8,2.4,5.9,78
+XLI,Industrials,0.3,1.1,2.0,61
+XLB,Materials,-0.2,0.9,1.6,55
+XLF,Financials,0.1,-0.6,0.7,48
+XLY,Consumer Discretionary,-0.5,0.2,1.9,57
+XLP,Consumer Staples,0.2,0.5,0.9,52
+XLV,Health Care,0.4,0.8,1.2,58
+XLU,Utilities,-0.1,-0.4,0.5,44
+XLE,Energy,-0.9,-1.5,-3.2,33
+XLRE,Real Estate,-0.3,-0.1,0.6,46
+XLC,Communication Services,0.6,1.9,4.0,70

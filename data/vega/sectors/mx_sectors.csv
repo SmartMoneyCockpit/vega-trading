@@ -1,0 +1,5 @@
+symbol,name,change_1d,change_5d,change_20d,rs_score
+ME_TEC,Technology (proxy),0.6,1.4,3.0,62
+ME_FIN,Financials (proxy),0.2,0.5,1.2,54
+ME_BAS,Materials (proxy),-0.3,0.2,0.7,47
+ME_COM,Communication (proxy),0.4,0.9,1.8,58
